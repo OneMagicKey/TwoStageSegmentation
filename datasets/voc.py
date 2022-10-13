@@ -2,9 +2,11 @@ import os
 import sys
 import tarfile
 import collections
+import xml.etree.ElementTree as ET
 import torch.utils.data as data
 import shutil
 import numpy as np
+import torch
 
 from PIL import Image
 from torchvision.datasets.utils import download_url, check_integrity
@@ -48,6 +50,30 @@ DATASET_YEAR_DICT = {
     }
 }
 
+VOC_BBOX_LABEL_NAMES = [
+    'background',
+    'aeroplane',
+    'bicycle',
+    'bird',
+    'boat',
+    'bottle',
+    'bus',
+    'car',
+    'cat',
+    'chair',
+    'cow',
+    'diningtable',
+    'dog',
+    'horse',
+    'motorbike',
+    'person',
+    'pottedplant',
+    'sheep',
+    'sofa',
+    'train',
+    'tvmonitor'
+]
+
 
 def voc_cmap(N=256, normalized=False):
     def bitget(byteval, idx):
@@ -69,6 +95,7 @@ def voc_cmap(N=256, normalized=False):
     cmap = cmap/255 if normalized else cmap
     return cmap
 
+
 class VOCSegmentation(data.Dataset):
     """`Pascal VOC <http://host.robots.ox.ac.uk/pascal/VOC/>`_ Segmentation Dataset.
     Args:
@@ -82,25 +109,28 @@ class VOCSegmentation(data.Dataset):
             and returns a transformed version. E.g, ``transforms.RandomCrop``
     """
     cmap = voc_cmap()
+
     def __init__(self,
                  root,
                  year='2012',
                  image_set='train',
                  download=False,
-                 transform=None):
+                 transform=None,
+                 return_bbox=False):
 
-        is_aug=False
-        if year=='2012_aug':
+        is_aug = False
+        if year == '2012_aug':
             is_aug = True
             year = '2012'
-        
+
         self.root = os.path.expanduser(root)
         self.year = year
         self.url = DATASET_YEAR_DICT[year]['url']
         self.filename = DATASET_YEAR_DICT[year]['filename']
         self.md5 = DATASET_YEAR_DICT[year]['md5']
         self.transform = transform
-        
+        self.return_bbox = return_bbox
+
         self.image_set = image_set
         base_dir = DATASET_YEAR_DICT[year]['base_dir']
         voc_root = os.path.join(self.root, base_dir)
@@ -112,7 +142,7 @@ class VOCSegmentation(data.Dataset):
         if not os.path.isdir(voc_root):
             raise RuntimeError('Dataset not found or corrupted.' +
                                ' You can use download=True to download it')
-        
+
         if is_aug and image_set=='train':
             mask_dir = os.path.join(voc_root, 'SegmentationClassAug')
             assert os.path.exists(mask_dir), "SegmentationClassAug not found, please refer to README.md and prepare it manually"
@@ -129,25 +159,56 @@ class VOCSegmentation(data.Dataset):
 
         with open(os.path.join(split_f), "r") as f:
             file_names = [x.strip() for x in f.readlines()]
-        
+
         self.images = [os.path.join(image_dir, x + ".jpg") for x in file_names]
         self.masks = [os.path.join(mask_dir, x + ".png") for x in file_names]
         assert (len(self.images) == len(self.masks))
+
+        self.bboxes = []
+
+        if self.return_bbox:
+            label2id = {label:id for id, label in enumerate(VOC_BBOX_LABEL_NAMES)}
+            bbox_dir = os.path.join(voc_root, 'Annotations')
+            bboxes_path = [os.path.join(bbox_dir, x + ".xml") for x in file_names]
+
+            for path_to_image_bbox in bboxes_path:
+                anno = ET.parse(path_to_image_bbox)
+                bbox, label = [], []
+                for obj in anno.findall('object'):
+                    bndbox_anno = obj.find('bndbox')
+                    # subtract 1 to make pixel indexes 0-based
+                    bbox.append([
+                        int(float(bndbox_anno.find(tag).text)) - 1
+                        for tag in ('ymin', 'xmin', 'ymax', 'xmax')
+                    ])
+                    label_name = obj.find('name').text.lower().strip()
+                    label.append(label2id[label_name])
+
+                bbox, label = np.stack(bbox).astype(np.int16), np.stack(label).astype(np.int16)
+                self.bboxes.append((bbox, label))
 
     def __getitem__(self, index):
         """
         Args:
             index (int): Index
         Returns:
-            tuple: (image, target) where target is the image segmentation.
+            tuple: (image, target, bbox) where target is the image segmentation.
+            if return_bbox is false, bounding_boxes is zeros tensor
         """
         img = Image.open(self.images[index]).convert('RGB')
         target = Image.open(self.masks[index])
+        bounding_boxes = torch.zeros((21, img.size[1], img.size[0]), dtype=torch.int16)
+        if self.return_bbox:
+            bounding_boxes[0, :, :] = 1
+            bbox, label = self.bboxes[index]
+            for (ymin, xmin, ymax, xmax), lb in zip(bbox, label):  # TODO: vectorize it
+                bounding_boxes[lb, ymin:ymax, xmin:xmax] = 1
+                bounding_boxes[0, ymin:ymax, xmin:xmax] = 0
+
         if self.transform is not None:
-            img, target = self.transform(img, target)
+            img, target, bounding_boxes = self.transform(img, target, bounding_boxes)
 
-        return img, target
-
+        return img, target, bounding_boxes
 
     def __len__(self):
         return len(self.images)
@@ -156,6 +217,7 @@ class VOCSegmentation(data.Dataset):
     def decode_target(cls, mask):
         """decode semantic mask to RGB image"""
         return cls.cmap[mask]
+
 
 def download_extract(url, root, filename, md5):
     download_url(url, root, filename, md5)
