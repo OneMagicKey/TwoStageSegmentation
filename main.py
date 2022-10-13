@@ -48,8 +48,8 @@ def get_argparser():
                         help="save segmentation results to \"./results\"")
     parser.add_argument("--total_itrs", type=int, default=30e3,
                         help="epoch number (default: 30k)")
-    parser.add_argument("--lr", type=float, default=0.01,
-                        help="learning rate (default: 0.01)")
+    parser.add_argument("--lr", type=float, default=0.001,
+                        help="learning rate (default: 0.001)")
     parser.add_argument("--lr_policy", type=str, default='poly', choices=['poly', 'step'],
                         help="learning rate scheduler policy")
     parser.add_argument("--step_size", type=int, default=10000)
@@ -79,6 +79,7 @@ def get_argparser():
                         help="epoch interval for eval (default: 100)")
     parser.add_argument("--download", action='store_true', default=False,
                         help="download datasets")
+    parser.add_argument("--return_bbox", action='store_true', default=False)
 
     # PASCAL VOC Options
     parser.add_argument("--year", type=str, default='2012',
@@ -101,7 +102,7 @@ def get_dataset(opts):
     """
     if opts.dataset == 'voc':
         train_transform = et.ExtCompose([
-            # et.ExtResize(size=opts.crop_size),
+            et.ExtResize(size=(opts.crop_size, opts.crop_size)),
             et.ExtRandomScale((0.5, 2.0)),
             et.ExtRandomCrop(size=(opts.crop_size, opts.crop_size), pad_if_needed=True),
             et.ExtRandomHorizontalFlip(),
@@ -124,9 +125,11 @@ def get_dataset(opts):
                                 std=[0.229, 0.224, 0.225]),
             ])
         train_dst = VOCSegmentation(root=opts.data_root, year=opts.year,
-                                    image_set='train', download=opts.download, transform=train_transform)
+                                    image_set='train', download=opts.download,
+                                    transform=train_transform, return_bbox=opts.return_bbox)
         val_dst = VOCSegmentation(root=opts.data_root, year=opts.year,
-                                  image_set='val', download=False, transform=val_transform)
+                                  image_set='val', download=False,
+                                  transform=val_transform, return_bbox=opts.return_bbox)
 
     if opts.dataset == 'cityscapes':
         train_transform = et.ExtCompose([
@@ -165,13 +168,18 @@ def validate(opts, model, loader, device, metrics, ret_samples_ids=None):
         img_id = 0
 
     with torch.no_grad():
-        for i, (images, labels) in tqdm(enumerate(loader)):
+        for i, (images, labels, bboxes) in tqdm(enumerate(loader)):
 
             images = images.to(device, dtype=torch.float32)
             labels = labels.to(device, dtype=torch.long)
 
-            outputs = model(images)
-            preds = outputs.detach().max(dim=1)[1].cpu().numpy()
+            if opts.return_bbox:
+                bboxes = bboxes.to(device, dtype=torch.float32)
+                outputs = model(images, bboxes)
+                bboxes = bboxes.cpu()
+            else:
+                outputs = model(images)
+            preds = outputs.detach().max(dim=1)[1].cpu()
             targets = labels.cpu().numpy()
 
             metrics.update(targets, preds)
@@ -253,10 +261,14 @@ def main():
     metrics = StreamSegMetrics(opts.num_classes)
 
     # Set up optimizer
-    optimizer = torch.optim.SGD(params=[
-        {'params': model.backbone.parameters(), 'lr': 0.1 * opts.lr},
-        {'params': model.classifier.parameters(), 'lr': opts.lr},
-    ], lr=opts.lr, momentum=0.9, weight_decay=opts.weight_decay)
+    if opts.return_bbox:
+        optimizer = torch.optim.SGD(params=model.parameters(), lr=opts.lr,
+                                    momentum=0.9, weight_decay=opts.weight_decay)
+    else:
+        optimizer = torch.optim.SGD(params=[
+            {'params': model.backbone.parameters(), 'lr': opts.lr},
+            {'params': model.classifier.parameters(), 'lr': 10*opts.lr},
+        ], lr=opts.lr, momentum=0.9, weight_decay=opts.weight_decay)
     # optimizer = torch.optim.SGD(params=model.parameters(), lr=opts.lr, momentum=0.9, weight_decay=opts.weight_decay)
     # torch.optim.lr_scheduler.StepLR(optimizer, step_size=opts.lr_decay_step, gamma=opts.lr_decay_factor)
     if opts.lr_policy == 'poly':
@@ -324,14 +336,19 @@ def main():
         # =====  Train  =====
         model.train()
         cur_epochs += 1
-        for (images, labels) in train_loader:
+        for (images, labels, bboxes) in train_loader:
             cur_itrs += 1
 
             images = images.to(device, dtype=torch.float32)
             labels = labels.to(device, dtype=torch.long)
 
             optimizer.zero_grad()
-            outputs = model(images)
+            if opts.return_bbox:
+                bboxes = bboxes.to(device, dtype=torch.float32)
+                outputs = model(images, bboxes)
+                bboxes = bboxes.cpu()
+            else:
+                outputs = model(images)
             loss = criterion(outputs, labels)
             loss.backward()
             optimizer.step()
