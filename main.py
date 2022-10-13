@@ -120,6 +120,8 @@ def get_dataset(opts):
             ])
         else:
             val_transform = et.ExtCompose([
+                # et.ExtResizeImageOnly(512, max_size=513),
+                et.ExtResizeImageOnly(size=(opts.crop_size, opts.crop_size)),
                 et.ExtToTensor(),
                 et.ExtNormalize(mean=[0.485, 0.456, 0.406],
                                 std=[0.229, 0.224, 0.225]),
@@ -181,7 +183,10 @@ def validate(opts, model, loader, device, metrics, ret_samples_ids=None):
                 outputs = model(images)
             preds = outputs.detach().max(dim=1)[1].cpu()
             targets = labels.cpu().numpy()
-
+            if not opts.crop_val:
+                # it is required to resize prediction to initial size in order to get correct iou
+                images, preds, _ = et.ExtResize(size=targets.shape[1:])(images, preds, bboxes)
+            preds = preds.numpy()
             metrics.update(targets, preds)
             if ret_samples_ids is not None and i in ret_samples_ids:  # get vis samples
                 ret_samples.append(
