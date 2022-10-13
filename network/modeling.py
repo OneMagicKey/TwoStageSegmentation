@@ -1,5 +1,5 @@
 from .utils import IntermediateLayerGetter
-from ._deeplab import DeepLabHead, DeepLabHeadV3Plus, DeepLabV3
+from ._deeplab import DeepLabHead, DeepLabHeadV3Plus, DeepLabV3, DeepLabV3_bbox, DeepLabHeadV3Plus_bbox
 from .backbone import (
     resnet,
     mobilenetv2,
@@ -51,9 +51,15 @@ def _segm_resnet(name, backbone_name, num_classes, output_stride, pretrained_bac
     elif name=='deeplabv3':
         return_layers = {'layer4': 'out'}
         classifier = DeepLabHead(inplanes , num_classes, aspp_dilate)
+    elif name=='deeplabv3plus_bbox':
+        return_layers = {'layer4': 'out', 'layer1': 'low_level'}
+        classifier = DeepLabHeadV3Plus_bbox(inplanes, low_level_planes, num_classes, aspp_dilate)
     backbone = IntermediateLayerGetter(backbone, return_layers=return_layers)
 
-    model = DeepLabV3(backbone, classifier)
+    if name=='deeplabv3plus_bbox':
+        model = DeepLabV3_bbox(backbone, classifier)
+    else:
+        model = DeepLabV3(backbone, classifier)
     return model
 
 
@@ -68,16 +74,22 @@ def _segm_xception(name, backbone_name, num_classes, output_stride, pretrained_b
     backbone = xception.xception(pretrained= 'imagenet' if pretrained_backbone else False, replace_stride_with_dilation=replace_stride_with_dilation)
     
     inplanes = 2048
-    low_level_planes = 128
+    low_level_planes = 256
     
     if name=='deeplabv3plus':
-        return_layers = {'conv4': 'out', 'block1': 'low_level'}
+        return_layers = {'conv4': 'out', 'block2': 'low_level'}
         classifier = DeepLabHeadV3Plus(inplanes, low_level_planes, num_classes, aspp_dilate)
     elif name=='deeplabv3':
         return_layers = {'conv4': 'out'}
         classifier = DeepLabHead(inplanes , num_classes, aspp_dilate)
+    elif name=='deeplabv3plus_bbox':
+        return_layers = {'conv4': 'out', 'block2': 'low_level'}
+        classifier = DeepLabHeadV3Plus_bbox(inplanes, low_level_planes, num_classes, aspp_dilate)
     backbone = IntermediateLayerGetter(backbone, return_layers=return_layers)
-    model = DeepLabV3(backbone, classifier)
+    if name=='deeplabv3plus_bbox':
+        model = DeepLabV3_bbox(backbone, classifier)
+    else:
+        model = DeepLabV3(backbone, classifier)
     return model
 
 
@@ -109,6 +121,7 @@ def _segm_mobilenet(name, backbone_name, num_classes, output_stride, pretrained_
     model = DeepLabV3(backbone, classifier)
     return model
 
+
 def _load_model(arch_type, backbone, num_classes, output_stride, pretrained_backbone):
 
     if backbone=='mobilenetv2':
@@ -122,7 +135,6 @@ def _load_model(arch_type, backbone, num_classes, output_stride, pretrained_back
     else:
         raise NotImplementedError
     return model
-
 
 # Deeplab v3
 def deeplabv3_hrnetv2_48(num_classes=21, output_stride=4, pretrained_backbone=False): # no pretrained backbone yet
@@ -200,6 +212,16 @@ def deeplabv3plus_resnet101(num_classes=21, output_stride=8, pretrained_backbone
     """
     return _load_model('deeplabv3plus', 'resnet101', num_classes, output_stride=output_stride, pretrained_backbone=pretrained_backbone)
 
+def deeplabv3plus_resnet101_bbox(num_classes=21, output_stride=8, pretrained_backbone=True):
+    """Constructs a DeepLabV3+ model with a ResNet-101 backbone.
+
+    Args:
+        num_classes (int): number of classes.
+        output_stride (int): output stride for deeplab.
+        pretrained_backbone (bool): If True, use the pretrained backbone.
+    """
+    return _load_model('deeplabv3plus_bbox', 'resnet101', num_classes, output_stride=output_stride, pretrained_backbone=pretrained_backbone)
+
 
 def deeplabv3plus_mobilenet(num_classes=21, output_stride=8, pretrained_backbone=True):
     """Constructs a DeepLabV3+ model with a MobileNetv2 backbone.
@@ -220,3 +242,23 @@ def deeplabv3plus_xception(num_classes=21, output_stride=8, pretrained_backbone=
         pretrained_backbone (bool): If True, use the pretrained backbone.
     """
     return _load_model('deeplabv3plus', 'xception', num_classes, output_stride=output_stride, pretrained_backbone=pretrained_backbone)
+
+def deeplabv3plus_xception_bbox(num_classes=21, output_stride=16, pretrained_backbone=True):
+    """Constructs a DeepLabV3+ model with a Xception backbone and bbox injection
+
+    Args:
+        num_classes (int): number of classes.
+        output_stride (int): output stride for deeplab.
+        pretrained_backbone (bool): If True, use the pretrained backbone.
+    """
+    return _load_model('deeplabv3plus_bbox', 'xception', num_classes, output_stride=output_stride, pretrained_backbone=pretrained_backbone)
+
+if __name__ == '__main__':
+    import torch
+    model = deeplabv3plus_xception_bbox(num_classes=21, output_stride=16, pretrained_backbone=True)
+    model.eval()
+    image = torch.randn(1, 3, 513, 353)
+    bboxes = torch.rand(size=(1, 21, 513, 353))
+    with torch.no_grad():
+        output = model.forward(image, bboxes)
+    print(output.size())

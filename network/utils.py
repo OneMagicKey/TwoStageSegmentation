@@ -18,6 +18,20 @@ class _SimpleSegmentationModel(nn.Module):
         return x
 
 
+class _AncillarySegmentationModel(nn.Module):
+    def __init__(self, backbone, classifier):
+        super(_AncillarySegmentationModel, self).__init__()
+        self.backbone = backbone
+        self.classifier = classifier
+
+    def forward(self, x, bboxes):
+        input_shape = x.shape[-2:]
+        features = self.backbone(x)
+        x = self.classifier(features, bboxes)
+        x = F.interpolate(x, size=input_shape, mode='bilinear', align_corners=False)
+        return x
+
+
 class IntermediateLayerGetter(nn.ModuleDict):
     """
     Module wrapper that returns intermediate layers from a model
