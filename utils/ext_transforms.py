@@ -2,40 +2,16 @@ import collections
 import torchvision
 import torch
 import torchvision.transforms.functional as F
+import torchvision.transforms as T
 import random 
 import numbers
 import numpy as np
-from PIL import Image
+# from PIL import Image
 
 
 #
 #  Extended Transforms for Semantic Segmentation
 #
-class ExtRandomHorizontalFlip(object):
-    """Horizontally flip the given PIL Image randomly with a given probability.
-    Args:
-        p (float): probability of the image being flipped. Default value is 0.5
-    """
-
-    def __init__(self, p=0.5):
-        self.p = p
-
-    def __call__(self, img, lbl):
-        """
-        Args:
-            img (PIL Image): Image to be flipped.
-        Returns:
-            PIL Image: Randomly flipped image.
-        """
-        if random.random() < self.p:
-            return F.hflip(img), F.hflip(lbl)
-        return img, lbl
-
-    def __repr__(self):
-        return self.__class__.__name__ + '(p={})'.format(self.p)
-
-
-
 class ExtCompose(object):
     """Composes several transforms together.
     Args:
@@ -50,10 +26,10 @@ class ExtCompose(object):
     def __init__(self, transforms):
         self.transforms = transforms
 
-    def __call__(self, img, lbl):
+    def __call__(self, img, lbl, bbox):
         for t in self.transforms:
-            img, lbl = t(img, lbl)
-        return img, lbl
+            img, lbl, bbox = t(img, lbl, bbox)
+        return img, lbl, bbox
 
     def __repr__(self):
         format_string = self.__class__.__name__ + '('
@@ -78,25 +54,25 @@ class ExtCenterCrop(object):
         else:
             self.size = size
 
-    def __call__(self, img, lbl):
+    def __call__(self, img, lbl, bbox):
         """
         Args:
             img (PIL Image): Image to be cropped.
         Returns:
             PIL Image: Cropped image.
         """
-        return F.center_crop(img, self.size), F.center_crop(lbl, self.size)
+        return F.center_crop(img, self.size), F.center_crop(lbl, self.size), F.center_crop(bbox, self.size)
 
     def __repr__(self):
         return self.__class__.__name__ + '(size={0})'.format(self.size)
 
 
 class ExtRandomScale(object):
-    def __init__(self, scale_range, interpolation=Image.BILINEAR):
+    def __init__(self, scale_range, interpolation=T.InterpolationMode.BILINEAR):
         self.scale_range = scale_range
         self.interpolation = interpolation
 
-    def __call__(self, img, lbl):
+    def __call__(self, img, lbl, bbox):
         """
         Args:
             img (PIL Image): Image to be scaled.
@@ -108,7 +84,8 @@ class ExtRandomScale(object):
         assert img.size == lbl.size
         scale = random.uniform(self.scale_range[0], self.scale_range[1])
         target_size = ( int(img.size[1]*scale), int(img.size[0]*scale) )
-        return F.resize(img, target_size, self.interpolation), F.resize(lbl, target_size, Image.NEAREST)
+        return F.resize(img, target_size, self.interpolation), F.resize(lbl, target_size, T.InterpolationMode.NEAREST), \
+               F.resize(bbox, target_size, T.InterpolationMode.NEAREST)
 
     def __repr__(self):
         interpolate_str = _pil_interpolation_to_str[self.interpolation]
@@ -122,11 +99,11 @@ class ExtScale(object):
             ``PIL.Image.BILINEAR``
     """
 
-    def __init__(self, scale, interpolation=Image.BILINEAR):
+    def __init__(self, scale, interpolation=T.InterpolationMode.BILINEAR):
         self.scale = scale
         self.interpolation = interpolation
 
-    def __call__(self, img, lbl):
+    def __call__(self, img, lbl, bbox):
         """
         Args:
             img (PIL Image): Image to be scaled.
@@ -137,7 +114,8 @@ class ExtScale(object):
         """
         assert img.size == lbl.size
         target_size = ( int(img.size[1]*self.scale), int(img.size[0]*self.scale) ) # (H, W)
-        return F.resize(img, target_size, self.interpolation), F.resize(lbl, target_size, Image.NEAREST)
+        return F.resize(img, target_size, self.interpolation), F.resize(lbl, target_size, T.InterpolationMode.NEAREST), \
+               F.resize(bbox, target_size, T.InterpolationMode.NEAREST)
 
     def __repr__(self):
         interpolate_str = _pil_interpolation_to_str[self.interpolation]
@@ -209,6 +187,7 @@ class ExtRandomRotation(object):
         format_string += ')'
         return format_string
 
+
 class ExtRandomHorizontalFlip(object):
     """Horizontally flip the given PIL Image randomly with a given probability.
     Args:
@@ -218,7 +197,7 @@ class ExtRandomHorizontalFlip(object):
     def __init__(self, p=0.5):
         self.p = p
 
-    def __call__(self, img, lbl):
+    def __call__(self, img, lbl, bbox):
         """
         Args:
             img (PIL Image): Image to be flipped.
@@ -226,8 +205,8 @@ class ExtRandomHorizontalFlip(object):
             PIL Image: Randomly flipped image.
         """
         if random.random() < self.p:
-            return F.hflip(img), F.hflip(lbl)
-        return img, lbl
+            return F.hflip(img), F.hflip(lbl), F.hflip(bbox)
+        return img, lbl, bbox
 
     def __repr__(self):
         return self.__class__.__name__ + '(p={})'.format(self.p)
@@ -262,7 +241,7 @@ class ExtPad(object):
     def __init__(self, diviser=32):
         self.diviser = diviser
     
-    def __call__(self, img, lbl):
+    def __call__(self, img, lbl, bbox):
         h, w = img.size
         ph = (h//32+1)*32 - h if h%32!=0 else 0
         pw = (w//32+1)*32 - w if w%32!=0 else 0
@@ -279,7 +258,8 @@ class ExtToTensor(object):
     def __init__(self, normalize=True, target_type='uint8'):
         self.normalize = normalize
         self.target_type = target_type
-    def __call__(self, pic, lbl):
+
+    def __call__(self, pic, lbl, bbox):
         """
         Note that labels will not be normalized to [0, 1].
         Args:
@@ -288,10 +268,12 @@ class ExtToTensor(object):
         Returns:
             Tensor: Converted image and label
         """
+        bbox = bbox.to(torch.float32)
+        lbl = torch.from_numpy( np.array( lbl, dtype=self.target_type) )
         if self.normalize:
-            return F.to_tensor(pic), torch.from_numpy( np.array( lbl, dtype=self.target_type) )
+            return F.to_tensor(pic), lbl, bbox
         else:
-            return torch.from_numpy( np.array( pic, dtype=np.float32).transpose(2, 0, 1) ), torch.from_numpy( np.array( lbl, dtype=self.target_type) )
+            return torch.from_numpy( np.array( pic, dtype=np.float32).transpose([2, 0, 1]) ), lbl, bbox
 
     def __repr__(self):
         return self.__class__.__name__ + '()'
@@ -310,7 +292,7 @@ class ExtNormalize(object):
         self.mean = mean
         self.std = std
 
-    def __call__(self, tensor, lbl):
+    def __call__(self, tensor, lbl, bbox):
         """
         Args:
             tensor (Tensor): Tensor image of size (C, H, W) to be normalized.
@@ -319,7 +301,7 @@ class ExtNormalize(object):
             Tensor: Normalized Tensor image.
             Tensor: Unchanged Tensor label
         """
-        return F.normalize(tensor, self.mean, self.std), lbl
+        return F.normalize(tensor, self.mean, self.std), lbl, bbox
 
     def __repr__(self):
         return self.__class__.__name__ + '(mean={0}, std={1})'.format(self.mean, self.std)
@@ -365,7 +347,7 @@ class ExtRandomCrop(object):
         j = random.randint(0, w - tw)
         return i, j, th, tw
 
-    def __call__(self, img, lbl):
+    def __call__(self, img, lbl, bbox):
         """
         Args:
             img (PIL Image): Image to be cropped.
@@ -396,7 +378,7 @@ class ExtRandomCrop(object):
 
         i, j, h, w = self.get_params(img, self.size)
 
-        return F.crop(img, i, j, h, w), F.crop(lbl, i, j, h, w)
+        return F.crop(img, i, j, h, w), F.crop(lbl, i, j, h, w), F.crop(bbox, i, j, h, w)
 
     def __repr__(self):
         return self.__class__.__name__ + '(size={0}, padding={1})'.format(self.size, self.padding)
@@ -414,24 +396,58 @@ class ExtResize(object):
             ``PIL.Image.BILINEAR``
     """
 
-    def __init__(self, size, interpolation=Image.BILINEAR):
+    def __init__(self, size, interpolation=T.InterpolationMode.BILINEAR, max_size=None):
         assert isinstance(size, int) or (isinstance(size, collections.Iterable) and len(size) == 2)
         self.size = size
+        self.max_size = max_size
         self.interpolation = interpolation
 
-    def __call__(self, img, lbl):
+    def __call__(self, img, lbl, bbox):
         """
         Args:
             img (PIL Image): Image to be scaled.
         Returns:
             PIL Image: Rescaled image.
         """
-        return F.resize(img, self.size, self.interpolation), F.resize(lbl, self.size, Image.NEAREST)
+        return F.resize(img, self.size, self.interpolation, self.max_size), \
+               F.resize(lbl, self.size, T.InterpolationMode.NEAREST, self.max_size), \
+               F.resize(bbox, self.size, T.InterpolationMode.NEAREST, self.max_size)
+
+
+class ExtResizeImageOnly(object):
+    """Resize the input PIL Image to the given size. Do not resize the label
+    Args:
+        size (sequence or int): Desired output size. If size is a sequence like
+            (h, w), output size will be matched to this. If size is an int,
+            smaller edge of the image will be matched to this number.
+            i.e, if height > width, then image will be rescaled to
+            (size * height / width, size)
+        interpolation (int, optional): Desired interpolation. Default is
+            ``PIL.Image.BILINEAR``
+        max_size (int, optional): The maximum allowed for the longer edge of the resized image
+    """
+
+    def __init__(self, size, max_size=None, interpolation=T.InterpolationMode.BILINEAR):
+        assert isinstance(size, int) or (isinstance(size, collections.Iterable) and len(size) == 2)
+        self.size = size
+        self.interpolation = interpolation
+        self.max_size = max_size
+
+    def __call__(self, img, lbl, bbox):
+        """
+        Args:
+            img (PIL Image): Image to be scaled.
+        Returns:
+            PIL Image: Rescaled image.
+        """
+        return F.resize(img, self.size, self.interpolation, max_size=self.max_size), lbl, \
+               F.resize(bbox, self.size, T.InterpolationMode.NEAREST, max_size=self.max_size)
 
     def __repr__(self):
         interpolate_str = _pil_interpolation_to_str[self.interpolation]
         return self.__class__.__name__ + '(size={0}, interpolation={1})'.format(self.size, interpolate_str) 
-    
+
+
 class ExtColorJitter(object):
     """Randomly change the brightness, contrast and saturation of an image.
     Args:
