@@ -267,8 +267,9 @@ class ExtPad(object):
         ph = (h//32+1)*32 - h if h%32!=0 else 0
         pw = (w//32+1)*32 - w if w%32!=0 else 0
         im = F.pad(img, ( pw//2, pw-pw//2, ph//2, ph-ph//2) )
-        lbl = F.pad(lbl, ( pw//2, pw-pw//2, ph//2, ph-ph//2))
-        return im, lbl
+        lbl = F.pad(lbl, ( pw//2, pw-pw//2, ph//2, ph-ph//2), fill=255)
+        bbox = F.pad(bbox, ( pw//2, pw-pw//2, ph//2, ph-ph//2))
+        return im, lbl, bbox
 
 class ExtToTensor(object):
     """Convert a ``PIL Image`` or ``numpy.ndarray`` to tensor.
@@ -376,17 +377,22 @@ class ExtRandomCrop(object):
         assert img.size == lbl.size, 'size of img and lbl should be the same. %s, %s'%(img.size, lbl.size)
         if self.padding > 0:
             img = F.pad(img, self.padding)
-            lbl = F.pad(lbl, self.padding)
+            lbl = F.pad(lbl, self.padding, fill=255)
+            bbox = F.pad(bbox, self.padding)
 
         # pad the width if needed
         if self.pad_if_needed and img.size[0] < self.size[1]:
-            img = F.pad(img, padding=int((1 + self.size[1] - img.size[0]) / 2))
-            lbl = F.pad(lbl, padding=int((1 + self.size[1] - lbl.size[0]) / 2))
+            pad_len = (int((1 + self.size[1] - img.size[0]) / 2), 0)  # pad left and right
+            img = F.pad(img, padding=pad_len)
+            lbl = F.pad(lbl, padding=pad_len, fill=255)
+            bbox = F.pad(bbox, padding=pad_len)
 
         # pad the height if needed
         if self.pad_if_needed and img.size[1] < self.size[0]:
-            img = F.pad(img, padding=int((1 + self.size[0] - img.size[1]) / 2))
-            lbl = F.pad(lbl, padding=int((1 + self.size[0] - lbl.size[1]) / 2))
+            pad_len = (0, int((1 + self.size[0] - img.size[1]) / 2))  # pad top and bottom
+            img = F.pad(img, padding=pad_len)
+            lbl = F.pad(lbl, padding=pad_len, fill=255)
+            bbox = F.pad(bbox, padding=pad_len)
 
         i, j, h, w = self.get_params(img, self.size)
 
