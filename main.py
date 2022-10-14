@@ -3,6 +3,7 @@ import network
 import utils
 import os
 import random
+import itertools
 import argparse
 import numpy as np
 
@@ -13,6 +14,7 @@ from metrics import StreamSegMetrics
 
 import torch
 import torch.nn as nn
+import torchvision.transforms.functional as F
 from utils.visualizer import Visualizer
 
 from PIL import Image
@@ -80,6 +82,8 @@ def get_argparser():
     parser.add_argument("--download", action='store_true', default=False,
                         help="download datasets")
     parser.add_argument("--return_bbox", action='store_true', default=False)
+    parser.add_argument("--multiscale_val", action='store_true', default=False,
+                        help="enable multi-scale flipping inference during validation")
 
     # PASCAL VOC Options
     parser.add_argument("--year", type=str, default='2012',
@@ -169,33 +173,44 @@ def validate(opts, model, loader, device, metrics, ret_samples_ids=None):
                                    std=[0.229, 0.224, 0.225])
         img_id = 0
 
+    multiscale = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75] if opts.multiscale_val else [1.0]
+    flipping = [0, 1] if opts.multiscale_val else [0]
     with torch.no_grad():
         for i, (images, labels, bboxes) in tqdm(enumerate(loader)):
+            multi_avg = torch.zeros(images.shape[0], opts.num_classes, images.shape[2], images.shape[3], dtype=torch.float32)  # BxCxHxW
+            for (scale, flip) in itertools.product(multiscale, flipping):
+                img_s, _, bboxes_s = et.ExtScale(scale=scale, is_tensor=True)(images, labels, bboxes)
+                img_s, _, bboxes_s = et.ExtRandomHorizontalFlip(p=flip)(img_s, labels, bboxes_s)
 
-            images = images.to(device, dtype=torch.float32)
-            labels = labels.to(device, dtype=torch.long)
+                img_s = img_s.to(device, dtype=torch.float32)
+                bboxes_s = bboxes_s.to(device, dtype=torch.float32)
+                if opts.return_bbox:
+                    outputs = model(img_s, bboxes_s)
+                    bboxes_s.cpu()
+                else:
+                    outputs = model(img_s)
 
-            if opts.return_bbox:
-                bboxes = bboxes.to(device, dtype=torch.float32)
-                outputs = model(images, bboxes)
-                bboxes = bboxes.cpu()
-            else:
-                outputs = model(images)
-            preds = outputs.detach().max(dim=1)[1].cpu()
-            targets = labels.cpu().numpy()
+                outputs = outputs.cpu()
+                if flip:
+                    outputs = F.hflip(outputs)
+                outputs = F.resize(outputs, size=multi_avg.shape[2:])
+                multi_avg += outputs
+            preds = multi_avg.argmax(dim=1)
+            gt_labels = labels.numpy().astype(np.uint8)
             if not opts.crop_val:
                 # it is required to resize prediction to initial size in order to get correct iou
-                images, preds, _ = et.ExtResize(size=targets.shape[1:])(images, preds, bboxes)
+                # batch size = 1 in this case
+                images, preds, _ = et.ExtResize(size=gt_labels.shape[1:])(images, preds, bboxes)
             preds = preds.numpy()
-            metrics.update(targets, preds)
+            metrics.update(gt_labels, preds)
             if ret_samples_ids is not None and i in ret_samples_ids:  # get vis samples
                 ret_samples.append(
-                    (images[0].detach().cpu().numpy(), targets[0], preds[0]))
+                    (images[0].detach().cpu().numpy(), gt_labels[0], preds[0]))
 
             if opts.save_val_results:
                 for i in range(len(images)):
                     image = images[i].detach().cpu().numpy()
-                    target = targets[i]
+                    target = gt_labels[i]
                     pred = preds[i]
 
                     image = (denorm(image) * 255).transpose(1, 2, 0).astype(np.uint8)
