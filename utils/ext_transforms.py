@@ -3,9 +3,11 @@ import torchvision
 import torch
 import torchvision.transforms.functional as F
 import torchvision.transforms as T
-import random 
+import random
 import numbers
 import numpy as np
+
+
 # from PIL import Image
 
 
@@ -83,7 +85,7 @@ class ExtRandomScale(object):
         """
         assert img.size == lbl.size
         scale = random.uniform(self.scale_range[0], self.scale_range[1])
-        target_size = ( int(img.size[1]*scale), int(img.size[0]*scale) )
+        target_size = (int(img.size[1] * scale), int(img.size[0] * scale))
         return F.resize(img, target_size, self.interpolation), F.resize(lbl, target_size, T.InterpolationMode.NEAREST), \
                F.resize(bbox, target_size, T.InterpolationMode.NEAREST)
 
@@ -91,16 +93,19 @@ class ExtRandomScale(object):
         interpolate_str = _pil_interpolation_to_str[self.interpolation]
         return self.__class__.__name__ + '(size={0}, interpolation={1})'.format(self.size, interpolate_str)
 
+
 class ExtScale(object):
-    """Resize the input PIL Image to the given scale.
+    """Resize the input PIL Image or Tensor to the given scale.
     Args:
         Scale (sequence or int): scale factors
+        is_tensor (boolean, optional): the tensor and the PIL image have a different order of dimensions
         interpolation (int, optional): Desired interpolation. Default is
             ``PIL.Image.BILINEAR``
     """
 
-    def __init__(self, scale, interpolation=T.InterpolationMode.BILINEAR):
+    def __init__(self, scale, is_tensor=False, interpolation=T.InterpolationMode.BILINEAR):
         self.scale = scale
+        self.is_tensor = is_tensor
         self.interpolation = interpolation
 
     def __call__(self, img, lbl, bbox):
@@ -112,8 +117,9 @@ class ExtScale(object):
             PIL Image: Rescaled image.
             PIL Image: Rescaled label.
         """
-        assert img.size == lbl.size
-        target_size = ( int(img.size[1]*self.scale), int(img.size[0]*self.scale) ) # (H, W)
+        size = (img.shape[-2], img.shape[-1]) if self.is_tensor else (img.size[1], img.size[0])  # (H, W)
+        target_size = (int(size[0] * self.scale), int(size[1] * self.scale))
+
         return F.resize(img, target_size, self.interpolation), F.resize(lbl, target_size, T.InterpolationMode.NEAREST), \
                F.resize(bbox, target_size, T.InterpolationMode.NEAREST)
 
@@ -176,7 +182,8 @@ class ExtRandomRotation(object):
 
         angle = self.get_params(self.degrees)
 
-        return F.rotate(img, angle, self.resample, self.expand, self.center), F.rotate(lbl, angle, self.resample, self.expand, self.center)
+        return F.rotate(img, angle, self.resample, self.expand, self.center), F.rotate(lbl, angle, self.resample,
+                                                                                       self.expand, self.center)
 
     def __repr__(self):
         format_string = self.__class__.__name__ + '(degrees={0}'.format(self.degrees)
@@ -237,24 +244,27 @@ class ExtRandomVerticalFlip(object):
     def __repr__(self):
         return self.__class__.__name__ + '(p={})'.format(self.p)
 
+
 class ExtPad(object):
     def __init__(self, diviser=32):
         self.diviser = diviser
-    
+
     def __call__(self, img, lbl, bbox):
         h, w = img.size
-        ph = (h//32+1)*32 - h if h%32!=0 else 0
-        pw = (w//32+1)*32 - w if w%32!=0 else 0
-        im = F.pad(img, ( pw//2, pw-pw//2, ph//2, ph-ph//2) )
-        lbl = F.pad(lbl, ( pw//2, pw-pw//2, ph//2, ph-ph//2), fill=255)
-        bbox = F.pad(bbox, ( pw//2, pw-pw//2, ph//2, ph-ph//2))
+        ph = (h // 32 + 1) * 32 - h if h % 32 != 0 else 0
+        pw = (w // 32 + 1) * 32 - w if w % 32 != 0 else 0
+        im = F.pad(img, (pw // 2, pw - pw // 2, ph // 2, ph - ph // 2))
+        lbl = F.pad(lbl, (pw // 2, pw - pw // 2, ph // 2, ph - ph // 2), fill=255)
+        bbox = F.pad(bbox, (pw // 2, pw - pw // 2, ph // 2, ph - ph // 2))
         return im, lbl, bbox
+
 
 class ExtToTensor(object):
     """Convert a ``PIL Image`` or ``numpy.ndarray`` to tensor.
     Converts a PIL Image or numpy.ndarray (H x W x C) in the range
     [0, 255] to a torch.FloatTensor of shape (C x H x W) in the range [0.0, 1.0].
     """
+
     def __init__(self, normalize=True, target_type='uint8'):
         self.normalize = normalize
         self.target_type = target_type
@@ -269,14 +279,15 @@ class ExtToTensor(object):
             Tensor: Converted image and label
         """
         bbox = bbox.to(torch.float32)
-        lbl = torch.from_numpy( np.array( lbl, dtype=self.target_type) )
+        lbl = torch.from_numpy(np.array(lbl, dtype=self.target_type))
         if self.normalize:
             return F.to_tensor(pic), lbl, bbox
         else:
-            return torch.from_numpy( np.array( pic, dtype=np.float32).transpose([2, 0, 1]) ), lbl, bbox
+            return torch.from_numpy(np.array(pic, dtype=np.float32).transpose([2, 0, 1])), lbl, bbox
 
     def __repr__(self):
         return self.__class__.__name__ + '()'
+
 
 class ExtNormalize(object):
     """Normalize a tensor image with mean and standard deviation.
@@ -356,7 +367,7 @@ class ExtRandomCrop(object):
             PIL Image: Cropped image.
             PIL Image: Cropped label.
         """
-        assert img.size == lbl.size, 'size of img and lbl should be the same. %s, %s'%(img.size, lbl.size)
+        assert img.size == lbl.size, 'size of img and lbl should be the same. %s, %s' % (img.size, lbl.size)
         if self.padding > 0:
             img = F.pad(img, self.padding)
             lbl = F.pad(lbl, self.padding, fill=255)
@@ -415,7 +426,7 @@ class ExtResize(object):
 
 
 class ExtResizeImageOnly(object):
-    """Resize the input PIL Image to the given size. Do not resize the label
+    """Resize the input PIL Image and the bbox to the given size. Do not resize the label
     Args:
         size (sequence or int): Desired output size. If size is a sequence like
             (h, w), output size will be matched to this. If size is an int,
@@ -445,7 +456,7 @@ class ExtResizeImageOnly(object):
 
     def __repr__(self):
         interpolate_str = _pil_interpolation_to_str[self.interpolation]
-        return self.__class__.__name__ + '(size={0}, interpolation={1})'.format(self.size, interpolate_str) 
+        return self.__class__.__name__ + '(size={0}, interpolation={1})'.format(self.size, interpolate_str)
 
 
 class ExtColorJitter(object):
@@ -464,6 +475,7 @@ class ExtColorJitter(object):
             hue_factor is chosen uniformly from [-hue, hue] or the given [min, max].
             Should have 0<= hue <= 0.5 or -0.5 <= min <= max <= 0.5.
     """
+
     def __init__(self, brightness=0, contrast=0, saturation=0, hue=0):
         self.brightness = self._check_input(brightness, 'brightness')
         self.contrast = self._check_input(contrast, 'contrast')
@@ -539,6 +551,7 @@ class ExtColorJitter(object):
         format_string += ', saturation={0}'.format(self.saturation)
         format_string += ', hue={0})'.format(self.hue)
         return format_string
+
 
 class Lambda(object):
     """Apply a user-defined lambda as a transform.
