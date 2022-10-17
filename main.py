@@ -1,6 +1,6 @@
 from tqdm import tqdm
 import network
-import utils
+import utilities
 import os
 import random
 import itertools
@@ -9,13 +9,13 @@ import numpy as np
 
 from torch.utils import data
 from datasets import VOCSegmentation, Cityscapes
-from utils import ext_transforms as et
+from utilities import ext_transforms as et
 from metrics import StreamSegMetrics
 
 import torch
 import torch.nn as nn
 import torchvision.transforms.functional as F
-from utils.visualizer import Visualizer
+from utilities.visualizer import Visualizer
 
 from PIL import Image
 import matplotlib
@@ -169,8 +169,8 @@ def validate(opts, model, loader, device, metrics, ret_samples_ids=None):
     if opts.save_val_results:
         if not os.path.exists('results'):
             os.mkdir('results')
-        denorm = utils.Denormalize(mean=[0.485, 0.456, 0.406],
-                                   std=[0.229, 0.224, 0.225])
+        denorm = utilities.Denormalize(mean=[0.485, 0.456, 0.406],
+                                       std=[0.229, 0.224, 0.225])
         img_id = 0
 
     multiscale = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75] if opts.multiscale_val else [1.0]
@@ -275,7 +275,7 @@ def main():
     model = network.modeling.__dict__[opts.model](num_classes=opts.num_classes, output_stride=opts.output_stride)
     if opts.separable_conv and 'plus' in opts.model:
         network.convert_to_separable_conv(model.classifier)
-    utils.set_bn_momentum(model.backbone, momentum=0.01)
+    utilities.set_bn_momentum(model.backbone, momentum=0.01)
 
     # Set up metrics
     metrics = StreamSegMetrics(opts.num_classes)
@@ -292,14 +292,14 @@ def main():
     # optimizer = torch.optim.SGD(params=model.parameters(), lr=opts.lr, momentum=0.9, weight_decay=opts.weight_decay)
     # torch.optim.lr_scheduler.StepLR(optimizer, step_size=opts.lr_decay_step, gamma=opts.lr_decay_factor)
     if opts.lr_policy == 'poly':
-        scheduler = utils.PolyLR(optimizer, opts.total_itrs, power=0.9)
+        scheduler = utilities.PolyLR(optimizer, opts.total_itrs, power=0.9)
     elif opts.lr_policy == 'step':
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=opts.step_size, gamma=0.1)
 
     # Set up criterion
-    # criterion = utils.get_loss(opts.loss_type)
+    # criterion = utilities.get_loss(opts.loss_type)
     if opts.loss_type == 'focal_loss':
-        criterion = utils.FocalLoss(ignore_index=255, size_average=True)
+        criterion = utilities.FocalLoss(ignore_index=255, size_average=True)
     elif opts.loss_type == 'cross_entropy':
         criterion = nn.CrossEntropyLoss(ignore_index=255, reduction='mean')
 
@@ -315,7 +315,7 @@ def main():
         }, path)
         print("Model saved as %s" % path)
 
-    utils.mkdir('checkpoints')
+    utilities.mkdir('checkpoints')
     # Restore
     best_score = 0.0
     cur_itrs = 0
@@ -342,7 +342,7 @@ def main():
     # ==========   Train Loop   ==========#
     vis_sample_id = np.random.randint(0, len(val_loader), opts.vis_num_samples,
                                       np.int32) if opts.enable_vis else None  # sample idxs for visualization
-    denorm = utils.Denormalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])  # denormalization for ori images
+    denorm = utilities.Denormalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])  # denormalization for ori images
 
     if opts.test_only:
         model.eval()
