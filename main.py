@@ -15,7 +15,7 @@ from metrics import StreamSegMetrics
 import torch
 import torch.nn as nn
 import torchvision.transforms.functional as F
-from utilities.visualizer import Visualizer
+# from utilities.visualizer import Visualizer
 
 from PIL import Image
 import matplotlib
@@ -244,8 +244,9 @@ def main():
         opts.num_classes = 19
 
     # Setup visualization
-    vis = Visualizer(port=opts.vis_port,
-                     env=opts.vis_env) if opts.enable_vis else None
+    # vis = Visualizer(port=opts.vis_port,
+    #                  env=opts.vis_env) if opts.enable_vis else None
+    vis = None
     if vis is not None:  # display options
         vis.vis_table("Options", vars(opts))
 
