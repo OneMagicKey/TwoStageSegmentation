@@ -20,7 +20,7 @@ def rescale_bboxes(out_bbox, size):
 
 
 def detr_pred_to_bbox(pred, result_img_size=(513, 513), num_classes=21, conf=0.7):
-    """ This funtion converts raw detr output to bbox mask tensor """
+    """ This function converts raw detr output to bbox mask tensor """
     bbox = torch.zeros((pred['pred_logits'].shape[0], num_classes, *result_img_size), dtype=torch.float32, device=pred['pred_logits'].device)
     bbox[:, 0, :, :] = 1
 
@@ -39,16 +39,15 @@ def detr_pred_to_bbox(pred, result_img_size=(513, 513), num_classes=21, conf=0.7
     return bbox
 
 
-def yolo_pred_to_bbox(predictions, input_img_size, result_img_size=(513, 513), num_classes=21, conf=0):
+def yolo_pred_to_bbox(predictions, input_img_size, result_img_size=(513, 513), num_classes=21):
+    """ Converts yolo predictions to the bounding box mask tensor """
     bbox = torch.zeros((num_classes, *input_img_size))
     bbox[0, :, :] = 1
 
     for pred in predictions:
-        if pred[4] > conf:  # confidence threshold
-            # pred_conf = pred[4]
-            (x_min, y_min, x_max, y_max, _, class_index) = pred.int() # cast to int so conf level equals to 0
-            bbox[class_index + 1, y_min:y_max, x_min:x_max] = 1
-            bbox[0, y_min:y_max, x_min:x_max] = 0
+        (x_min, y_min, x_max, y_max, _, class_index) = pred.int()  # cast to int so conf level equals to 0
+        bbox[class_index + 1, y_min:y_max, x_min:x_max] = 1
+        bbox[0, y_min:y_max, x_min:x_max] = 0
 
     bbox = F.resize(bbox, size=result_img_size, interpolation=T.InterpolationMode.NEAREST)
     bbox.to(torch.float32)
@@ -70,7 +69,7 @@ def masks_to_bboxes(input_mask, num_classes=21):
             contours, _ = cv.findContours(class_mask, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)
 
             for contour in contours:
-                (x,y,w,h) = cv.boundingRect(contour)
+                (x, y, w, h) = cv.boundingRect(contour)
                 bbox[batch_index, class_index, y:y+h, x:x+w] = 1
                 bbox[batch_index, 0, y:y+h, x:x+w] = 0
 
