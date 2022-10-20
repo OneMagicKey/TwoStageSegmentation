@@ -16,13 +16,14 @@ normalize = transforms.Normalize(mean=[0.5, 0.5, 0.5],
                                   std=[0.5, 0.5, 0.5])
 The resize parameter of the validation transform should be 333, and make sure to center crop at 299x299
 """
-from __future__ import print_function, division, absolute_import
 import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.model_zoo as model_zoo
 from torch.nn import init
+
+import ssl
 
 __all__ = ['xception']
 
@@ -228,7 +229,7 @@ def xception(num_classes=1000, pretrained='imagenet', replace_stride_with_dilati
         settings = pretrained_settings['xception'][pretrained]
         assert num_classes == settings['num_classes'], \
             "num_classes should be {}, but is {}".format(settings['num_classes'], num_classes)
-
+        ssl._create_default_https_context = ssl._create_unverified_context
         model = Xception(num_classes=num_classes, replace_stride_with_dilation=replace_stride_with_dilation)
         model.load_state_dict(model_zoo.load_url(settings['url']))
 
