@@ -1,5 +1,6 @@
 import os
 import sys
+from tqdm import tqdm
 import tarfile
 import collections
 import xml.etree.ElementTree as ET
@@ -7,13 +8,14 @@ import torch.utils.data as data
 import shutil
 import numpy as np
 import torch
-
 from PIL import Image
 from torchvision.datasets.utils import download_url, check_integrity
+from utilities import load_yolo
+
 
 DATASET_YEAR_DICT = {
     '2012': {
-        'url': 'http://host.robots.ox.ac.uk/pascal/VOC/voc2012/VOCtrainval_11-May-2012.tar',
+        'url': 'http://pjreddie.com/media/files/VOCtrainval_11-May-2012.tar',
         'filename': 'VOCtrainval_11-May-2012.tar',
         'md5': '6cd6e144f989b92b3379bac3b3de84fd',
         'base_dir': 'VOCdevkit/VOC2012'
@@ -116,7 +118,8 @@ class VOCSegmentation(data.Dataset):
                  image_set='train',
                  download=False,
                  transform=None,
-                 return_bbox=False):
+                 return_bbox=None,
+                 ckpt_detection=None):
 
         is_aug = False
         if year == '2012_aug':
@@ -130,6 +133,7 @@ class VOCSegmentation(data.Dataset):
         self.md5 = DATASET_YEAR_DICT[year]['md5']
         self.transform = transform
         self.return_bbox = return_bbox
+        self.ckpt_detection = ckpt_detection
 
         self.image_set = image_set
         base_dir = DATASET_YEAR_DICT[year]['base_dir']
@@ -166,7 +170,33 @@ class VOCSegmentation(data.Dataset):
 
         self.bboxes = []
 
-        if self.return_bbox:
+        if self.return_bbox == 'yolo':
+            yolo = load_yolo(self.ckpt_detection)
+            yolo = yolo.eval()
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            yolo.to(device)
+            print(f'Generating bounding boxes for the {self.image_set} set ...')
+            for img_path in tqdm(self.images):
+                bbox, label, probs = [], [], []
+                img = Image.open(img_path).convert('RGB')
+                with torch.no_grad():
+                    yolo_pred = yolo(img_path, size=(img.size[1], img.size[0]))
+                predictions = yolo_pred.pred[0].cpu()
+                if len(predictions) == 0:  # If there are no detected objects
+                    bbox.append([0, 0, 0, 0])
+                    label.append(0)
+                    probs.append(0)
+                for (x_min, y_min, x_max, y_max, prob, class_index) in predictions:
+                    bbox.append([y_min, x_min, y_max, x_max])
+                    label.append(class_index + 1)
+                    probs.append(prob)
+                bbox, label, probs = map(np.stack, (bbox, label, probs))
+                self.bboxes.append((bbox.astype(np.int16), label.astype(np.int16)))  # probs
+
+            yolo.cpu()
+            print(f'Bounding boxes for {len(self.bboxes)} images were generated')
+
+        elif self.return_bbox == 'ground_truth':
             label2id = {label:id for id, label in enumerate(VOC_BBOX_LABEL_NAMES)}
             bbox_dir = os.path.join(voc_root, 'Annotations')
             bboxes_path = [os.path.join(bbox_dir, x + ".xml") for x in file_names]
@@ -193,7 +223,7 @@ class VOCSegmentation(data.Dataset):
             index (int): Index
         Returns:
             tuple: (image, target, bbox) where target is the image segmentation.
-            if return_bbox is false, bounding_boxes is zeros tensor
+            if return_bbox is None, bounding_boxes is a zeros tensor
         """
         img = Image.open(self.images[index]).convert('RGB')
         target = Image.open(self.masks[index])

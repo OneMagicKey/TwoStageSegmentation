@@ -81,7 +81,9 @@ def get_argparser():
                         help="epoch interval for eval (default: 100)")
     parser.add_argument("--download", action='store_true', default=False,
                         help="download datasets")
-    parser.add_argument("--return_bbox", action='store_true', default=False)
+    parser.add_argument("--return_bbox", type=str, default=None, choices=['ground_truth', 'yolo'])
+    parser.add_argument("--ckpt_detection", type=str, default=None,
+                        help='[path to detection model to produce bounding boxes')
     parser.add_argument("--multiscale_val", action='store_true', default=False,
                         help="enable multi-scale flipping inference during validation")
     parser.add_argument("--train_num_images", type=int, default=-1,
@@ -132,12 +134,12 @@ def get_dataset(opts):
                 et.ExtNormalize(mean=[0.485, 0.456, 0.406],
                                 std=[0.229, 0.224, 0.225]),
             ])
-        train_dst = VOCSegmentation(root=opts.data_root, year=opts.year,
-                                    image_set='train', download=opts.download,
-                                    transform=train_transform, return_bbox=opts.return_bbox)
-        val_dst = VOCSegmentation(root=opts.data_root, year=opts.year,
-                                  image_set='val', download=False,
-                                  transform=val_transform, return_bbox=opts.return_bbox)
+        train_dst = VOCSegmentation(root=opts.data_root, year=opts.year, image_set='train', download=opts.download,
+                                    transform=train_transform, return_bbox=opts.return_bbox,
+                                    ckpt_detection=opts.ckpt_detection)
+        val_dst = VOCSegmentation(root=opts.data_root, year=opts.year, image_set='val', download=False,
+                                  transform=val_transform, return_bbox=opts.return_bbox,
+                                  ckpt_detection=opts.ckpt_detection)
 
     if opts.dataset == 'cityscapes':
         train_transform = et.ExtCompose([
