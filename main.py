@@ -84,6 +84,8 @@ def get_argparser():
     parser.add_argument("--return_bbox", action='store_true', default=False)
     parser.add_argument("--multiscale_val", action='store_true', default=False,
                         help="enable multi-scale flipping inference during validation")
+    parser.add_argument("--train_num_images", type=int, default=-1,
+                        help="use fixed num of images for training (default: -1, i.e. use all available images")
 
     # PASCAL VOC Options
     parser.add_argument("--year", type=str, default='2012',
@@ -264,6 +266,8 @@ def main():
         opts.val_batch_size = 1
 
     train_dst, val_dst = get_dataset(opts)
+    if opts.train_num_images > 0:
+        train_dst, _ = data.random_split(train_dst, [opts.train_num_images, len(train_dst) - opts.train_num_images])
     train_loader = data.DataLoader(
         train_dst, batch_size=opts.batch_size, shuffle=True, num_workers=2,
         drop_last=True)  # drop_last=True to ignore single-image batches.
