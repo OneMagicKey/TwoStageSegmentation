@@ -246,7 +246,7 @@ def main():
         opts.num_classes = 21
     elif opts.dataset.lower() == 'cityscapes':
         opts.num_classes = 19
-
+    torch.set_num_threads(2)
     # Setup visualization
     # vis = Visualizer(port=opts.vis_port,
     #                  env=opts.vis_env) if opts.enable_vis else None
@@ -392,8 +392,8 @@ def main():
                 interval_loss = 0.0
 
             if (cur_itrs) % opts.val_interval == 0:
-                save_ckpt('checkpoints/latest_%s_%s_os%d.pth' %
-                          (opts.model, opts.dataset, opts.output_stride))
+                save_ckpt('checkpoints/latest_%s_%s_num_%d.pth' %
+                          (opts.model, opts.dataset, len(train_dst)))
                 print("validation...")
                 model.eval()
                 val_score, ret_samples = validate(
@@ -402,8 +402,8 @@ def main():
                 print(metrics.to_str(val_score))
                 if val_score['Mean IoU'] > best_score:  # save best model
                     best_score = val_score['Mean IoU']
-                    save_ckpt('checkpoints/best_%s_%s_os%d.pth' %
-                              (opts.model, opts.dataset, opts.output_stride))
+                    save_ckpt('checkpoints/best_%s_%s_num_%d.pth' %
+                              (opts.model, opts.dataset, len(train_dst)))
 
                 if vis is not None:  # visualize validation score and samples
                     vis.vis_scalar("[Val] Overall Acc", cur_itrs, val_score['Overall Acc'])
