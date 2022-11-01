@@ -121,11 +121,13 @@ class VOCSegmentation(data.Dataset):
                  return_bbox=None,
                  ckpt_detection=None):
 
-        is_aug = False
+        is_aug, is_weak = False, False
         if year == '2012_aug':
             is_aug = True
             year = '2012'
-
+        elif year == '2012_weak':
+            is_weak = True
+            year = '2012'
         self.root = os.path.expanduser(root)
         self.year = year
         self.url = DATASET_YEAR_DICT[year]['url']
@@ -135,6 +137,7 @@ class VOCSegmentation(data.Dataset):
         self.return_bbox = return_bbox
         self.ckpt_detection = ckpt_detection
 
+        self.is_weak = is_weak
         self.image_set = image_set
         base_dir = DATASET_YEAR_DICT[year]['base_dir']
         voc_root = os.path.join(self.root, base_dir)
@@ -147,10 +150,12 @@ class VOCSegmentation(data.Dataset):
             raise RuntimeError('Dataset not found or corrupted.' +
                                ' You can use download=True to download it')
 
-        if is_aug and image_set=='train':
+        if is_aug and image_set == 'train':
             mask_dir = os.path.join(voc_root, 'SegmentationClassAug')
             assert os.path.exists(mask_dir), "SegmentationClassAug not found, please refer to README.md and prepare it manually"
             split_f = os.path.join( self.root, 'train_aug.txt')#'./datasets/data/train_aug.txt'
+        elif self.is_weak and image_set == 'train':
+            split_f = os.path.join(self.root, 'train_weak.txt')
         else:
             mask_dir = os.path.join(voc_root, 'SegmentationClass')
             splits_dir = os.path.join(voc_root, 'ImageSets/Segmentation')
@@ -165,16 +170,14 @@ class VOCSegmentation(data.Dataset):
             file_names = [x.strip() for x in f.readlines()]
 
         self.images = [os.path.join(image_dir, x + ".jpg") for x in file_names]
-        self.masks = [os.path.join(mask_dir, x + ".png") for x in file_names]
-        assert (len(self.images) == len(self.masks))
+        if not self.is_weak:
+            self.masks = [os.path.join(mask_dir, x + ".png") for x in file_names]
+            assert (len(self.images) == len(self.masks))
 
         self.bboxes = []
 
         if self.return_bbox == 'yolo':
             yolo = load_yolo(self.ckpt_detection)
-            yolo = yolo.eval()
-            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-            yolo.to(device)
             print(f'Generating bounding boxes for the {self.image_set} set ...')
             for img_path in tqdm(self.images):
                 bbox, label, probs = [], [], []
@@ -226,7 +229,10 @@ class VOCSegmentation(data.Dataset):
             if return_bbox is None, bounding_boxes is a zeros tensor
         """
         img = Image.open(self.images[index]).convert('RGB')
-        target = Image.open(self.masks[index])
+        if not self.is_weak:
+            target = Image.open(self.masks[index])
+        else:
+            target = Image.new(mode='1', size=img.size)
         bounding_boxes = torch.zeros((21, img.size[1], img.size[0]), dtype=torch.int16)
         if self.return_bbox:
             bounding_boxes[0, :, :] = 1
