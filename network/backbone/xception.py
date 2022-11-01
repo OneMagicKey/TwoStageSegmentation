@@ -229,9 +229,10 @@ def xception(num_classes=1000, pretrained='imagenet', replace_stride_with_dilati
         settings = pretrained_settings['xception'][pretrained]
         assert num_classes == settings['num_classes'], \
             "num_classes should be {}, but is {}".format(settings['num_classes'], num_classes)
-        ssl._create_default_https_context = ssl._create_unverified_context
+        # ssl._create_default_https_context = ssl._create_unverified_context
         model = Xception(num_classes=num_classes, replace_stride_with_dilation=replace_stride_with_dilation)
-        model.load_state_dict(model_zoo.load_url(settings['url']))
+        # model.load_state_dict(model_zoo.load_url(settings['url']))
+        model.load_state_dict(torch.load('xception-43020ad28.pth', map_location=torch.device('cpu')))
 
     # TODO: ugly
     model.last_linear = model.fc
