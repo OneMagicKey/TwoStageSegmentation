@@ -1,5 +1,5 @@
-torch
-torchvision
+torch >= 1.10.0
+torchvision >= 0.11.1
 numpy
 pillow
 scikit-learn
