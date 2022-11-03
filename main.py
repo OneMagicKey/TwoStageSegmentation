@@ -382,7 +382,7 @@ def main():
             if vis is not None:
                 vis.vis_scalar('Loss', cur_itrs, np_loss)
 
-            if cur_itrs % 1 == 0:
+            if cur_itrs % 10 == 0:
                 interval_loss = interval_loss / 10
                 print(f'Epoch {cur_epochs}, Itrs {cur_itrs}/{opts.total_itrs}, Loss={interval_loss:.5f}')
                 interval_loss = 0.0
