@@ -277,7 +277,7 @@ def main():
     print("Dataset: %s, Train set: %d, Val set: %d" %
           (opts.dataset, len(train_dst), len(val_dst)))
 
-    # Set up model (all models are 'constructed at network.modeling)
+    # Set up model (all models are constructed at network.modeling)
     model = network.modeling.__dict__[opts.model](num_classes=opts.num_classes, output_stride=opts.output_stride)
     if opts.separable_conv and 'plus' in opts.model:
         network.convert_to_separable_conv(model.classifier)
@@ -302,7 +302,7 @@ def main():
     elif opts.lr_policy == 'step':
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=opts.step_size, gamma=0.1)
 
-    # Set up criterion
+    # Set up criterion,
     # criterion = utilities.get_loss(opts.loss_type)
     if opts.loss_type == 'focal_loss':
         criterion = utilities.FocalLoss(ignore_index=255, size_average=True)
@@ -372,7 +372,6 @@ def main():
             if opts.return_bbox:
                 bboxes = bboxes.to(device, dtype=torch.float32)
                 outputs = model(images, bboxes)
-                bboxes = bboxes.cpu()
             else:
                 outputs = model(images)
             loss = criterion(outputs, labels)
@@ -384,13 +383,13 @@ def main():
             if vis is not None:
                 vis.vis_scalar('Loss', cur_itrs, np_loss)
 
-            if (cur_itrs) % 10 == 0:
+            if cur_itrs % 10 == 0:
                 interval_loss = interval_loss / 10
                 print("Epoch %d, Itrs %d/%d, Loss=%f" %
                       (cur_epochs, cur_itrs, opts.total_itrs, interval_loss))
                 interval_loss = 0.0
 
-            if (cur_itrs) % opts.val_interval == 0:
+            if cur_itrs % opts.val_interval == 0:
                 save_ckpt('checkpoints/latest_%s_%s_num_%d.pth' %
                           (opts.model, opts.dataset, len(train_dst)))
                 print("validation...")
