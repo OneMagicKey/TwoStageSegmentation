@@ -48,7 +48,7 @@ def get_argparser():
     parser.add_argument("--test_only", action='store_true', default=False)
     parser.add_argument("--save_val_results", action='store_true', default=False,
                         help="save segmentation results to \"./results\"")
-    parser.add_argument("--total_itrs", type=int, default=30e3,
+    parser.add_argument("--total_itrs", type=int, default=30000,
                         help="epoch number (default: 30k)")
     parser.add_argument("--lr", type=float, default=0.001,
                         help="learning rate (default: 0.001)")
@@ -221,9 +221,9 @@ def validate(opts, model, loader, device, metrics, ret_samples_ids=None):
                     target = loader.dataset.decode_target(target).astype(np.uint8)
                     pred = loader.dataset.decode_target(pred).astype(np.uint8)
 
-                    Image.fromarray(image).save('results/%d_image.png' % img_id)
-                    Image.fromarray(target).save('results/%d_target.png' % img_id)
-                    Image.fromarray(pred).save('results/%d_pred.png' % img_id)
+                    Image.fromarray(image).save(f'results/{img_id}_image.png')
+                    Image.fromarray(target).save(f'results/{img_id}_target.png')
+                    Image.fromarray(pred).save(f'results/{img_id}_pred.png')
 
                     fig = plt.figure()
                     plt.imshow(image)
@@ -232,7 +232,7 @@ def validate(opts, model, loader, device, metrics, ret_samples_ids=None):
                     ax = plt.gca()
                     ax.xaxis.set_major_locator(matplotlib.ticker.NullLocator())
                     ax.yaxis.set_major_locator(matplotlib.ticker.NullLocator())
-                    plt.savefig('results/%d_overlay.png' % img_id, bbox_inches='tight', pad_inches=0)
+                    plt.savefig(f'results/{img_id}_overlay.png', bbox_inches='tight', pad_inches=0)
                     plt.close()
                     img_id += 1
 
@@ -255,7 +255,7 @@ def main():
 
     os.environ['CUDA_VISIBLE_DEVICES'] = opts.gpu_id
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print("Device: %s" % device)
+    print(f'Device: {device}')
 
     # Setup random seed
     torch.manual_seed(opts.random_seed)
@@ -274,8 +274,7 @@ def main():
         drop_last=True)  # drop_last=True to ignore single-image batches.
     val_loader = data.DataLoader(
         val_dst, batch_size=opts.val_batch_size, shuffle=True, num_workers=2)
-    print("Dataset: %s, Train set: %d, Val set: %d" %
-          (opts.dataset, len(train_dst), len(val_dst)))
+    print(f'Dataset: {opts.dataset}, Train set: {len(train_dst)}, Val set: {len(val_dst)}')
 
     # Set up model (all models are constructed at network.modeling)
     model = network.modeling.__dict__[opts.model](num_classes=opts.num_classes, output_stride=opts.output_stride)
@@ -319,7 +318,7 @@ def main():
             "scheduler_state": scheduler.state_dict(),
             "best_score": best_score,
         }, path)
-        print("Model saved as %s" % path)
+        print(f'Model saved as {path}')
 
     utilities.mkdir('checkpoints')
     # Restore
@@ -337,8 +336,8 @@ def main():
             scheduler.load_state_dict(checkpoint["scheduler_state"])
             cur_itrs = checkpoint["cur_itrs"]
             best_score = checkpoint['best_score']
-            print("Training state restored from %s" % opts.ckpt)
-        print("Model restored from %s" % opts.ckpt)
+            print(f'Training state restored from {opts.ckpt}')
+        print(f'Model restored from {opts.ckpt}')
         del checkpoint  # free memory
     else:
         print("[!] Retrain")
@@ -383,15 +382,13 @@ def main():
             if vis is not None:
                 vis.vis_scalar('Loss', cur_itrs, np_loss)
 
-            if cur_itrs % 10 == 0:
+            if cur_itrs % 1 == 0:
                 interval_loss = interval_loss / 10
-                print("Epoch %d, Itrs %d/%d, Loss=%f" %
-                      (cur_epochs, cur_itrs, opts.total_itrs, interval_loss))
+                print(f'Epoch {cur_epochs}, Itrs {cur_itrs}/{opts.total_itrs}, Loss={interval_loss:.5f}')
                 interval_loss = 0.0
 
             if cur_itrs % opts.val_interval == 0:
-                save_ckpt('checkpoints/latest_%s_%s_num_%d.pth' %
-                          (opts.model, opts.dataset, len(train_dst)))
+                save_ckpt(f'checkpoints/latest_{opts.model}_{opts.dataset}_num_{len(train_dst)}.pth')
                 print("validation...")
                 model.eval()
                 val_score, ret_samples = validate(
@@ -400,8 +397,7 @@ def main():
                 print(metrics.to_str(val_score))
                 if val_score['Mean IoU'] > best_score:  # save best model
                     best_score = val_score['Mean IoU']
-                    save_ckpt('checkpoints/best_%s_%s_num_%d.pth' %
-                              (opts.model, opts.dataset, len(train_dst)))
+                    save_ckpt(f'checkpoints/best_{opts.model}_{opts.dataset}_num_{len(train_dst)}.pth')
 
                 if vis is not None:  # visualize validation score and samples
                     vis.vis_scalar("[Val] Overall Acc", cur_itrs, val_score['Overall Acc'])
@@ -413,7 +409,7 @@ def main():
                         target = train_dst.decode_target(target).transpose(2, 0, 1).astype(np.uint8)
                         lbl = train_dst.decode_target(lbl).transpose(2, 0, 1).astype(np.uint8)
                         concat_img = np.concatenate((img, target, lbl), axis=2)  # concat along width
-                        vis.vis_image('Sample %d' % k, concat_img)
+                        vis.vis_image(f'Sample {k}', concat_img)
                 model.train()
             scheduler.step()
 
