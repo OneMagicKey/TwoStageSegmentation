@@ -3,11 +3,13 @@ import network
 import utilities
 import os
 import random
+from datetime import datetime
 import itertools
 import argparse
 import numpy as np
 
 from torch.utils import data
+from torch.utils.tensorboard import SummaryWriter
 from datasets import VOCSegmentation, Cityscapes
 from utilities import ext_transforms as et
 from metrics import StreamSegMetrics
@@ -15,7 +17,6 @@ from metrics import StreamSegMetrics
 import torch
 import torch.nn as nn
 import torchvision.transforms.functional as F
-# from utilities.visualizer import Visualizer
 
 from PIL import Image
 import matplotlib
@@ -93,13 +94,9 @@ def get_argparser():
     parser.add_argument("--year", type=str, default='2012',
                         choices=['2012_aug', '2012', '2011', '2009', '2008', '2007'], help='year of VOC')
 
-    # Visdom options
-    parser.add_argument("--enable_vis", action='store_true', default=False,
-                        help="use visdom for visualization")
-    parser.add_argument("--vis_port", type=str, default='13570',
-                        help='port for visdom')
-    parser.add_argument("--vis_env", type=str, default='main',
-                        help='env for visdom')
+    # Visualization and logging options
+    parser.add_argument("--enable_log", action='store_true', default=True,
+                        help="use tensorboard for visualization adn logging")
     parser.add_argument("--vis_num_samples", type=int, default=8,
                         help='number of samples for visualization (default: 8)')
     return parser
@@ -251,12 +248,12 @@ def main():
         opts.num_classes = 21
     elif opts.dataset.lower() == 'cityscapes':
         opts.num_classes = 19
-    # Setup visualization
-    # vis = Visualizer(port=opts.vis_port,
-    #                  env=opts.vis_env) if opts.enable_vis else None
-    vis = None
-    if vis is not None:  # display options
-        vis.vis_table("Options", vars(opts))
+
+    # Setup logging and visualization
+    if opts.enable_log:
+        curr_time = datetime.now().strftime("%d-%m-%Y_%H-%M")
+        tb_train = SummaryWriter(f'logs/{curr_time}/train')
+        tb_val = SummaryWriter(f'logs/{curr_time}/val')
 
     os.environ['CUDA_VISIBLE_DEVICES'] = opts.gpu_id
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -351,7 +348,7 @@ def main():
 
     # ==========   Train Loop   ==========#
     vis_sample_id = np.random.randint(0, len(val_loader), opts.vis_num_samples,
-                                      np.int32) if opts.enable_vis else None  # sample idxs for visualization
+                                      np.int32) if opts.enable_log else None  # sample idxs for visualization
     denorm = utilities.Denormalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])  # denormalization for ori images
 
     if opts.test_only:
@@ -383,14 +380,13 @@ def main():
             loss.backward()
             optimizer.step()
 
-            np_loss = loss.detach().cpu().numpy()
-            interval_loss += np_loss
-            if vis is not None:
-                vis.vis_scalar('Loss', cur_itrs, np_loss)
+            interval_loss += loss.detach().cpu().numpy()
 
             if cur_itrs % 10 == 0:
                 interval_loss = interval_loss / 10
                 print(f'Epoch {cur_epochs}, Itrs {cur_itrs}/{opts.total_itrs}, Loss={interval_loss:.5f}')
+                if opts.enable_log:
+                    tb_train.add_scalar('Loss', interval_loss, cur_itrs)
                 interval_loss = 0.0
 
             if cur_itrs % opts.val_interval == 0:
@@ -405,21 +401,24 @@ def main():
                     best_score = val_score['Mean IoU']
                     save_ckpt(f'checkpoints/best_{opts.model}_{opts.dataset}_num_{len(train_dst)}.pth')
 
-                if vis is not None:  # visualize validation score and samples
-                    vis.vis_scalar("[Val] Overall Acc", cur_itrs, val_score['Overall Acc'])
-                    vis.vis_scalar("[Val] Mean IoU", cur_itrs, val_score['Mean IoU'])
-                    vis.vis_table("[Val] Class IoU", val_score['Class IoU'])
+                if opts.enable_log:  # visualize validation score and samples
+                    tb_val.add_scalar('Loss', loss_val, cur_itrs)
+                    tb_val.add_scalar('[Val] Overall Acc', val_score['Overall Acc'], cur_itrs)
+                    tb_val.add_scalar('[Val] Mean IoU', val_score['Mean IoU'], cur_itrs)
 
                     for k, (img, target, lbl) in enumerate(ret_samples):
                         img = (denorm(img) * 255).astype(np.uint8)
                         target = train_dst.decode_target(target).transpose(2, 0, 1).astype(np.uint8)
                         lbl = train_dst.decode_target(lbl).transpose(2, 0, 1).astype(np.uint8)
                         concat_img = np.concatenate((img, target, lbl), axis=2)  # concat along width
-                        vis.vis_image(f'Sample {k}', concat_img)
+                        tb_val.add_image(f'Image and prediction {k}', torch.from_numpy(concat_img))
+
                 model.train()
             scheduler.step()
 
             if cur_itrs >= opts.total_itrs:
+                tb_train.close()
+                tb_val.close()
                 return
 
 
