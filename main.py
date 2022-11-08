@@ -166,7 +166,7 @@ def get_dataset(opts):
     return train_dst, val_dst
 
 
-def validate(opts, model, loader, device, metrics, ret_samples_ids=None):
+def validate(opts, model, loader, device, metrics, criterion, ret_samples_ids=None):
     """Do validation and return specified samples"""
     metrics.reset()
     ret_samples = []
@@ -179,42 +179,46 @@ def validate(opts, model, loader, device, metrics, ret_samples_ids=None):
 
     multiscale = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75] if opts.multiscale_val else [1.0]
     flipping = [0, 1] if opts.multiscale_val else [0]
+    loss_val = 0.0
     with torch.no_grad():
         for i, (images, labels, bboxes) in tqdm(enumerate(loader)):
             multi_avg = torch.zeros(images.shape[0], opts.num_classes, images.shape[2], images.shape[3], dtype=torch.float32)  # BxCxHxW
             for (scale, flip) in itertools.product(multiscale, flipping):
-                img_s, _, bboxes_s = et.ExtScale(scale=scale, is_tensor=True)(images, labels, bboxes)
-                img_s, _, bboxes_s = et.ExtRandomHorizontalFlip(p=flip)(img_s, labels, bboxes_s)
+                img_s, labels_s, bboxes_s = et.ExtScale(scale=scale, is_tensor=True)(images, labels, bboxes)
+                img_s, labels_s, bboxes_s = et.ExtRandomHorizontalFlip(p=flip)(img_s, labels_s, bboxes_s)
 
                 img_s = img_s.to(device, dtype=torch.float32)
                 bboxes_s = bboxes_s.to(device, dtype=torch.float32)
+                labels_s = labels_s.to(device, dtype=torch.long)
+
                 if opts.return_bbox:
                     outputs = model(img_s, bboxes_s)
                     bboxes_s.cpu()
                 else:
                     outputs = model(img_s)
-
+                loss_val += criterion(outputs, labels_s)  # just for the stats
                 outputs = outputs.cpu()
                 if flip:
                     outputs = F.hflip(outputs)
                 outputs = F.resize(outputs, size=multi_avg.shape[2:])
                 multi_avg += outputs
             preds = multi_avg.argmax(dim=1)
-            gt_labels = labels.numpy().astype(np.uint8)
             if not opts.crop_val:
                 # it is required to resize prediction to initial size in order to get correct iou
                 # batch size = 1 in this case
-                images, preds, _ = et.ExtResize(size=gt_labels.shape[1:])(images, preds, bboxes)
+                images, preds, _ = et.ExtResize(size=labels.shape[1:])(images, preds, bboxes)
             preds = preds.numpy()
-            metrics.update(gt_labels, preds)
+            labels = labels.numpy().astype(np.uint8)
+
+            metrics.update(labels, preds)
             if ret_samples_ids is not None and i in ret_samples_ids:  # get vis samples
                 ret_samples.append(
-                    (images[0].detach().cpu().numpy(), gt_labels[0], preds[0]))
+                    (images[0].detach().cpu().numpy(), labels[0], preds[0]))
 
             if opts.save_val_results:
                 for i in range(len(images)):
                     image = images[i].detach().cpu().numpy()
-                    target = gt_labels[i]
+                    target = labels[i]
                     pred = preds[i]
 
                     image = (denorm(image) * 255).transpose(1, 2, 0).astype(np.uint8)
@@ -237,7 +241,8 @@ def validate(opts, model, loader, device, metrics, ret_samples_ids=None):
                     img_id += 1
 
         score = metrics.get_results()
-    return score, ret_samples
+        loss_val /= (len(multiscale) * len(flipping) * len(loader) / labels.shape[0])  # for normalization
+    return score, ret_samples, loss_val
 
 
 def main():
@@ -351,8 +356,9 @@ def main():
 
     if opts.test_only:
         model.eval()
-        val_score, ret_samples = validate(
-            opts=opts, model=model, loader=val_loader, device=device, metrics=metrics, ret_samples_ids=vis_sample_id)
+        val_score, ret_samples, loss_val = validate(
+            opts=opts, model=model, loader=val_loader, device=device, metrics=metrics, criterion=criterion,
+            ret_samples_ids=vis_sample_id)
         print(metrics.to_str(val_score))
         return
 
@@ -391,8 +397,8 @@ def main():
                 save_ckpt(f'checkpoints/latest_{opts.model}_{opts.dataset}_num_{len(train_dst)}.pth')
                 print("validation...")
                 model.eval()
-                val_score, ret_samples = validate(
-                    opts=opts, model=model, loader=val_loader, device=device, metrics=metrics,
+                val_score, ret_samples, loss_val = validate(
+                    opts=opts, model=model, loader=val_loader, device=device, metrics=metrics, criterion=criterion,
                     ret_samples_ids=vis_sample_id)
                 print(metrics.to_str(val_score))
                 if val_score['Mean IoU'] > best_score:  # save best model
