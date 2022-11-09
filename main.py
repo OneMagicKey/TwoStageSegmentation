@@ -408,8 +408,8 @@ def main():
 
                     for k, (img, target, lbl) in enumerate(ret_samples):
                         img = (denorm(img) * 255).astype(np.uint8)
-                        target = train_dst.decode_target(target).transpose(2, 0, 1).astype(np.uint8)
-                        lbl = train_dst.decode_target(lbl).transpose(2, 0, 1).astype(np.uint8)
+                        target = val_dst.decode_target(target).transpose(2, 0, 1).astype(np.uint8)
+                        lbl = val_dst.decode_target(lbl).transpose(2, 0, 1).astype(np.uint8)
                         concat_img = np.concatenate((img, target, lbl), axis=2)  # concat along width
                         tb_val.add_image(f'Image and prediction {k}', torch.from_numpy(concat_img))
 
