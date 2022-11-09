@@ -204,19 +204,17 @@ def validate(opts, model, loader, device, metrics, criterion, ret_samples_ids=No
                 # it is required to resize prediction to initial size in order to get correct iou
                 # batch size = 1 in this case
                 images, preds, _ = et.ExtResize(size=labels.shape[1:])(images, preds, bboxes)
+            images = images.numpy()
             preds = preds.numpy()
             labels = labels.numpy().astype(np.uint8)
 
             metrics.update(labels, preds)
             if ret_samples_ids is not None and i in ret_samples_ids:  # get vis samples
                 ret_samples.append(
-                    (images[0].detach().cpu().numpy(), labels[0], preds[0]))
+                    (images[0], labels[0], preds[0]))
 
             if opts.save_val_results:
-                for i in range(len(images)):
-                    image = images[i].detach().cpu().numpy()
-                    target = labels[i]
-                    pred = preds[i]
+                for image, target, pred in zip(images, labels, preds):
 
                     image = (denorm(image) * 255).transpose(1, 2, 0).astype(np.uint8)
                     target = loader.dataset.decode_target(target).astype(np.uint8)
@@ -406,11 +404,11 @@ def main():
                     tb_val.add_scalar('[Val] Overall Acc', val_score['Overall Acc'], cur_itrs)
                     tb_val.add_scalar('[Val] Mean IoU', val_score['Mean IoU'], cur_itrs)
 
-                    for k, (img, target, lbl) in enumerate(ret_samples):
+                    for k, (img, gt_label, pred) in enumerate(ret_samples):
                         img = (denorm(img) * 255).astype(np.uint8)
-                        target = val_dst.decode_target(target).transpose(2, 0, 1).astype(np.uint8)
-                        lbl = val_dst.decode_target(lbl).transpose(2, 0, 1).astype(np.uint8)
-                        concat_img = np.concatenate((img, target, lbl), axis=2)  # concat along width
+                        gt_label = val_dst.decode_target(gt_label).transpose(2, 0, 1).astype(np.uint8)
+                        pred = val_dst.decode_target(pred).transpose(2, 0, 1).astype(np.uint8)
+                        concat_img = np.concatenate((img, pred, gt_label), axis=2)  # concat along width
                         tb_val.add_image(f'Image and prediction {k}', torch.from_numpy(concat_img))
 
                 model.train()
