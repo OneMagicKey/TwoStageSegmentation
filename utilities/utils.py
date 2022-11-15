@@ -3,6 +3,10 @@ import torch.nn as nn
 import numpy as np
 import os 
 
+from PIL import Image
+import matplotlib
+import matplotlib.pyplot as plt
+
 
 def denormalize(tensor, mean, std):
     mean = np.array(mean)
@@ -48,3 +52,23 @@ def pad_to_shape(image, shape):
     y_pad = shape[1] - image.shape[1]
     x_pad = shape[2] - image.shape[2]
     return np.pad(image, ((0, 0), (y_pad//2, y_pad//2 + y_pad%2), (x_pad//2, x_pad//2 + x_pad%2)))
+
+
+def save_img(image, target, pred, loader, denorm, save_dir, img_id):
+    image = (denorm(image) * 255).transpose(1, 2, 0).astype(np.uint8)
+    target = loader.dataset.decode_target(target).astype(np.uint8)
+    pred = loader.dataset.decode_target(pred).astype(np.uint8)
+
+    Image.fromarray(image).save(f'{save_dir}/{img_id}_image.png')
+    Image.fromarray(target).save(f'{save_dir}/{img_id}_target.png')
+    Image.fromarray(pred).save(f'{save_dir}/{img_id}_pred.png')
+
+    fig = plt.figure()
+    plt.imshow(image)
+    plt.axis('off')
+    plt.imshow(pred, alpha=0.7)
+    ax = plt.gca()
+    ax.xaxis.set_major_locator(matplotlib.ticker.NullLocator())
+    ax.yaxis.set_major_locator(matplotlib.ticker.NullLocator())
+    plt.savefig(f'{save_dir}/{img_id}_overlay.png', bbox_inches='tight', pad_inches=0)
+    plt.close()

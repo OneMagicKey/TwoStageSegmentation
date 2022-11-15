@@ -1,14 +1,16 @@
 from tqdm import tqdm
 import network
-import utilities
 import os
 import random
+import logging
 import itertools
 import argparse
 import numpy as np
 
 from torch.utils import data
 from datasets import VOCSegmentation, Cityscapes
+from utilities import TensorboardSummary, visualize_images
+from utilities import Denormalize, set_bn_momentum, save_img, PolyLR, FocalLoss
 from utilities import ext_transforms as et
 from metrics import StreamSegMetrics
 
@@ -16,11 +18,6 @@ import torch
 import torch.nn as nn
 from torch.nn.functional import softmax
 import torchvision.transforms.functional as F
-# from utilities.visualizer import Visualizer
-
-from PIL import Image
-import matplotlib
-import matplotlib.pyplot as plt
 
 
 def get_argparser():
@@ -97,6 +94,12 @@ def get_argparser():
     # PASCAL VOC Options
     parser.add_argument("--year", type=str, default='2012',
                         choices=['2012_aug', '2012', '2011', '2009', '2008', '2007'], help='year of VOC')
+
+    # Visualization and logging options
+    parser.add_argument("--enable_log", action='store_true', default=True,
+                        help="use tensorboard for visualization and logging")
+    parser.add_argument("--vis_num_samples", type=int, default=8,
+                        help='number of samples for visualization (default: 8)')
     return parser
 
 
@@ -140,75 +143,60 @@ def get_dataset(opts):
     return train_dst_full, val_dst, train_dst_weak
 
 
-def validate(opts, model, loader, device, metrics, ret_samples_ids=None):
+@torch.no_grad()
+def validate(opts, model, loader, device, metrics, criterion, ret_samples_ids=None):
     """Do validation and return specified samples"""
     metrics.reset()
     ret_samples = []
     if opts.save_val_results:
-        if not os.path.exists('results'):
-            os.mkdir('results')
-        denorm = utilities.Denormalize(mean=[0.485, 0.456, 0.406],
-                                       std=[0.229, 0.224, 0.225])
+        save_dir = 'results'
+        os.makedirs(save_dir, exist_ok=True)
+        denorm = Denormalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         img_id = 0
 
     multiscale = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75] if opts.multiscale_val else [1.0]
     flipping = [0, 1] if opts.multiscale_val else [0]
-    with torch.no_grad():
-        for i, (images, labels, bboxes) in tqdm(enumerate(loader)):
-            multi_avg = torch.zeros(images.shape[0], opts.num_classes, images.shape[2], images.shape[3],
-                                    dtype=torch.float32)  # BxCxHxW
-            for (scale, flip) in itertools.product(multiscale, flipping):
-                img_s, _, bboxes_s = et.ExtScale(scale=scale, is_tensor=True)(images, labels, bboxes)
-                img_s, _, bboxes_s = et.ExtRandomHorizontalFlip(p=flip)(img_s, labels, bboxes_s)
+    loss_val = 0.0
+    for i, (images, labels, bboxes) in tqdm(enumerate(loader)):
+        multi_avg = torch.zeros(images.shape[0], opts.num_classes, images.shape[2], images.shape[3],
+                                dtype=torch.float32)  # BxCxHxW
+        for (scale, flip) in itertools.product(multiscale, flipping):
+            img_s, labels_s, bboxes_s = et.ExtScale(scale=scale, is_tensor=True)(images, labels, bboxes)
+            img_s, labels_s, bboxes_s = et.ExtRandomHorizontalFlip(p=flip)(img_s, labels_s, bboxes_s)
 
-                img_s = img_s.to(device, dtype=torch.float32)
-                # VALIDATION ONLY FOR THE PRIMARY MODEL
-                outputs = model(img_s)
+            img_s = img_s.to(device, dtype=torch.float32)
+            labels_s = labels_s.to(device, dtype=torch.long)
 
-                outputs = outputs.cpu()
-                if flip:
-                    outputs = F.hflip(outputs)
-                outputs = F.resize(outputs, size=multi_avg.shape[2:])
-                multi_avg += outputs
-            preds = multi_avg.argmax(dim=1)
-            gt_labels = labels.numpy().astype(np.uint8)
-            if not opts.crop_val:
-                # it is required to resize prediction to initial size in order to get correct iou
-                # batch size = 1 in this case
-                images, preds, _ = et.ExtResize(size=gt_labels.shape[1:])(images, preds, bboxes)
-            preds = preds.numpy()
-            metrics.update(gt_labels, preds)
-            if ret_samples_ids is not None and i in ret_samples_ids:  # get vis samples
-                ret_samples.append(
-                    (images[0].detach().cpu().numpy(), gt_labels[0], preds[0]))
+            outputs = model(img_s)
 
-            if opts.save_val_results:
-                for i in range(len(images)):
-                    image = images[i].detach().cpu().numpy()
-                    target = gt_labels[i]
-                    pred = preds[i]
+            loss_val += criterion(outputs, labels_s)
+            outputs = outputs.cpu()
+            if flip:
+                outputs = F.hflip(outputs)
+            outputs = F.resize(outputs, size=multi_avg.shape[2:])
+            multi_avg += outputs
+        preds = multi_avg.argmax(dim=1)
+        if not opts.crop_val:
+            # it is required to resize prediction to initial size in order to get correct iou
+            # batch size = 1 in this case
+            images, preds, _ = et.ExtResize(size=labels.shape[1:])(images, preds, bboxes)
+        images = images.numpy()
+        preds = preds.numpy()
+        labels = labels.numpy().astype(np.uint8)
 
-                    image = (denorm(image) * 255).transpose(1, 2, 0).astype(np.uint8)
-                    target = loader.dataset.decode_target(target).astype(np.uint8)
-                    pred = loader.dataset.decode_target(pred).astype(np.uint8)
+        metrics.update(labels, preds)
+        if ret_samples_ids is not None and i in ret_samples_ids:  # get vis samples
+            ret_samples.append(
+                (images[0], labels[0], preds[0]))
 
-                    Image.fromarray(image).save(f'results/{img_id}_image.png')
-                    Image.fromarray(target).save(f'results/{img_id}_target.png')
-                    Image.fromarray(pred).save(f'results/{img_id}_pred.png')
+        if opts.save_val_results:
+            for image, target, pred in zip(images, labels, preds):
+                save_img(image, target, pred, loader, denorm, save_dir, img_id)
+                img_id += 1
 
-                    fig = plt.figure()
-                    plt.imshow(image)
-                    plt.axis('off')
-                    plt.imshow(pred, alpha=0.7)
-                    ax = plt.gca()
-                    ax.xaxis.set_major_locator(matplotlib.ticker.NullLocator())
-                    ax.yaxis.set_major_locator(matplotlib.ticker.NullLocator())
-                    plt.savefig(f'results/{img_id}_overlay.png', bbox_inches='tight', pad_inches=0)
-                    plt.close()
-                    img_id += 1
-
-        score = metrics.get_results()
-    return score, ret_samples
+    score = metrics.get_results()
+    loss_val /= (len(multiscale) * len(flipping) * len(loader) / labels.shape[0])  # for normalization
+    return score, ret_samples, loss_val
 
 
 def main():
@@ -217,12 +205,27 @@ def main():
         opts.num_classes = 21
     elif opts.dataset.lower() == 'cityscapes':
         opts.num_classes = 19
+
+    # Setup logging to console
+    logs = logging.getLogger()
+    logs.setLevel(logging.INFO)
+    stream = logging.StreamHandler()
+    format = logging.Formatter("%(message)s")
+    stream.setFormatter(format)
+    logs.addHandler(stream)
+
+    # Setup logging to file and tensorboard visualization
+    if opts.enable_log:
+        tb = TensorboardSummary('logs')
+        tb_train, tb_val, log_dir = tb.create()
+
+        log_file = logging.FileHandler(os.path.join(log_dir, 'log.txt'))
+        log_file.setFormatter(format)
+        logs.addHandler(log_file)
+
     os.environ['CUDA_VISIBLE_DEVICES'] = opts.gpu_id
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f'Device: {device}')
-    if device == 'cpu':
-        # To local testing
-        torch.set_num_threads(2)
+    logs.info(f'Device: {device}')
 
     # Setup random seed
     torch.manual_seed(opts.random_seed)
@@ -247,8 +250,8 @@ def main():
         drop_last=True, sampler=sampler_weak)
     val_loader = data.DataLoader(
         val_dst, batch_size=opts.val_batch_size, shuffle=True, num_workers=2)
-    print(f'Dataset: {opts.dataset}, Train full set: {len(train_dst_full)}, '
-          f'Train weak set: {len(train_dst_weak)}, Val set: {len(val_dst)}')
+    logs.info(f'Dataset: {opts.dataset}, Train full set: {len(train_dst_full)}, '
+              f'Train weak set: {len(train_dst_weak)}, Val set: {len(val_dst)}')
 
     # Set up model (all models are constructed at network.modeling)
     primary_model = network.modeling.__dict__[opts.primary_model](num_classes=opts.num_classes,
@@ -258,8 +261,8 @@ def main():
     if opts.separable_conv and 'plus' in opts.primary_model:
         network.convert_to_separable_conv(primary_model.classifier)
         network.convert_to_separable_conv(ancillary_model.classifier)
-    utilities.set_bn_momentum(primary_model.backbone, momentum=0.01)
-    utilities.set_bn_momentum(ancillary_model.backbone, momentum=0.01)
+    set_bn_momentum(primary_model.backbone, momentum=0.01)
+    set_bn_momentum(ancillary_model.backbone, momentum=0.01)
 
     # Set up metrics
     metrics = StreamSegMetrics(opts.num_classes)
@@ -271,14 +274,14 @@ def main():
     ], lr=opts.lr, momentum=0.9, weight_decay=opts.weight_decay)
 
     if opts.lr_policy == 'poly':
-        scheduler = utilities.PolyLR(optimizer, opts.total_itrs, power=0.9)
+        scheduler = PolyLR(optimizer, opts.total_itrs, power=0.9)
     elif opts.lr_policy == 'step':
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=opts.step_size, gamma=0.1)
 
     # Set up criterion,
     # criterion = utilities.get_loss(opts.loss_type)
     if opts.loss_type == 'focal_loss':
-        criterion_f = utilities.FocalLoss(ignore_index=255, size_average=True)
+        criterion_f = FocalLoss(ignore_index=255, size_average=True)
     elif opts.loss_type == 'cross_entropy':
         criterion_f = nn.CrossEntropyLoss(ignore_index=255, reduction='mean')
         criterion_w = nn.CrossEntropyLoss(reduction='mean')  # takes probs as target
@@ -293,9 +296,9 @@ def main():
             "scheduler_state": scheduler.state_dict(),
             "best_score": best_score,
         }, path)
-        print(f'Model saved as {path}')
+        logs.info(f'Model saved as {path}')
 
-    utilities.mkdir('checkpoints')
+    os.makedirs('checkpoints', exist_ok=True)
     # Restore
     best_score, cur_itrs, cur_epochs = 0.0, 0, 0
     if opts.ckpt is not None and os.path.isfile(opts.ckpt):
@@ -309,30 +312,35 @@ def main():
             scheduler.load_state_dict(checkpoint["scheduler_state"])
             cur_itrs = checkpoint["cur_itrs"]
             best_score = checkpoint['best_score']
-            print(f'Training state restored from {opts.ckpt}')
-        print(f'Model restored from {opts.ckpt}')
+            logs.info(f'Training state restored from {opts.ckpt}')
+        logs.info(f'Model restored from {opts.ckpt}')
         del checkpoint  # free memory
     else:
-        print("[!] Retrain")
+        logs.info("[!] Retrain")
         primary_model = nn.DataParallel(primary_model)
         primary_model.to(device)
     checkpoint_ancillary = torch.load(opts.ckpt_ancillary, map_location=torch.device('cpu'))
     ancillary_model.load_state_dict(checkpoint_ancillary["model_state"])
     ancillary_model = nn.DataParallel(ancillary_model)
     ancillary_model.to(device)
+    logs.info(f'Ancillary model restored from {opts.ckpt_ancillary}')
 
     # ==========   Train Loop   ==========#
-    denorm = utilities.Denormalize(mean=[0.485, 0.456, 0.406],
-                                   std=[0.229, 0.224, 0.225])  # denormalization for ori images
+    vis_sample_id = np.random.randint(0, len(val_loader), opts.vis_num_samples,
+                                      np.int32) if opts.enable_log else None
+    denorm = Denormalize(mean=[0.485, 0.456, 0.406],
+                         std=[0.229, 0.224, 0.225])  # denormalization for ori images
 
     if opts.test_only:
         primary_model.eval()
-        val_score, ret_samples = validate(
+        val_score, ret_samples, loss_val = validate(
             opts=opts, model=primary_model, loader=val_loader, device=device, metrics=metrics, ret_samples_ids=None)
-        print(metrics.to_str(val_score))
+        logs.info(metrics.to_str(val_score))
         return
 
     interval_loss = 0
+    dst_len = len(train_dst_full) + len(train_dst_weak)
+    bs = opts.batch_size_f + opts.batch_size_f
     ancillary_model.eval()
     while True:  # cur_itrs < opts.total_itrs:
         # =====  Train  =====
@@ -340,7 +348,7 @@ def main():
         cur_epochs += 1
         for batch in zip(train_loader_f, train_loader_w):
 
-            (images_f, labels_f, _), (images_w, _, bboxes_w) = batch  # CHECK SHAPES
+            (images_f, labels_f, _), (images_w, _, bboxes_w) = batch
             cur_itrs += 1
 
             images_f = images_f.to(device, dtype=torch.float32)
@@ -368,25 +376,37 @@ def main():
 
             if cur_itrs % 10 == 0:
                 interval_loss = interval_loss / 10
-                print(f'Epoch {cur_epochs}, Itrs {cur_itrs}/{opts.total_itrs}, Loss={interval_loss:.5f}')
+                logs.info(f'Epoch {cur_epochs}, Itrs {cur_itrs}/{opts.total_itrs}, Loss={interval_loss:.5f}')
+                if opts.enable_log:
+                    tb_train.add_scalar('Loss', interval_loss, cur_itrs)
                 interval_loss = 0.0
 
             if cur_itrs % opts.val_interval == 0:
                 save_ckpt(f'checkpoints/latest_{opts.primary_model}_{opts.dataset}_num_{len(train_dst_full)}.pth')
-                print("validation...")
+                logs.info("validation...")
                 primary_model.eval()
-                val_score, ret_samples = validate(
+                val_score, ret_samples, loss_val = validate(
                     opts=opts, model=primary_model, loader=val_loader, device=device, metrics=metrics,
-                    ret_samples_ids=None)
-                print(metrics.to_str(val_score))
+                    criterion=criterion_f,
+                    ret_samples_ids=vis_sample_id)
+                logs.info(metrics.to_str(val_score))
                 if val_score['Mean IoU'] > best_score:  # save best model
                     best_score = val_score['Mean IoU']
                     save_ckpt(f'checkpoints/best_{opts.primary_model}_{opts.dataset}_num_{len(train_dst_full)}.pth')
+                if opts.enable_log:  # visualize validation score and samples
+                    tb_val.add_scalar('Loss', loss_val, cur_itrs)
+                    tb_val.add_scalar('[Val] Overall Acc', val_score['Overall Acc'], cur_itrs)
+                    tb_val.add_scalar('[Val] Mean IoU', val_score['Mean IoU'], cur_itrs)
 
+                    visualize_images(tb_val, ret_samples, denorm, val_dst)
                 primary_model.train()
             scheduler.step()
 
+            if cur_epochs * dst_len // bs > cur_itrs:
+                cur_epochs += 1
             if cur_itrs >= opts.total_itrs:
+                tb_train.close()
+                tb_val.close()
                 return
 
 
