@@ -3,6 +3,7 @@ import torch.nn as nn
 import numpy as np
 import os 
 
+
 def denormalize(tensor, mean, std):
     mean = np.array(mean)
     std = np.array(std)
@@ -10,6 +11,7 @@ def denormalize(tensor, mean, std):
     _mean = -mean/std
     _std = 1/std
     return normalize(tensor, _mean, _std)
+
 
 class Denormalize(object):
     def __init__(self, mean, std):
@@ -23,16 +25,26 @@ class Denormalize(object):
             return (tensor - self._mean.reshape(-1,1,1)) / self._std.reshape(-1,1,1)
         return normalize(tensor, self._mean, self._std)
 
+
 def set_bn_momentum(model, momentum=0.1):
     for m in model.modules():
         if isinstance(m, nn.BatchNorm2d):
             m.momentum = momentum
+
 
 def fix_bn(model):
     for m in model.modules():
         if isinstance(m, nn.BatchNorm2d):
             m.eval()
 
+
 def mkdir(path):
     if not os.path.exists(path):
         os.mkdir(path)
+
+
+def pad_to_shape(image, shape):
+    """Pad numpy array (image) to the given shape"""
+    y_pad = shape[1] - image.shape[1]
+    x_pad = shape[2] - image.shape[2]
+    return np.pad(image, ((0, 0), (y_pad//2, y_pad//2 + y_pad%2), (x_pad//2, x_pad//2 + x_pad%2)))

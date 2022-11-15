@@ -9,7 +9,7 @@ import argparse
 import numpy as np
 
 from torch.utils import data
-from torch.utils.tensorboard import SummaryWriter
+from utilities import TensorboardSummary, visualize_images
 from datasets import VOCSegmentation, Cityscapes
 from utilities import ext_transforms as et
 from metrics import StreamSegMetrics
@@ -96,7 +96,7 @@ def get_argparser():
 
     # Visualization and logging options
     parser.add_argument("--enable_log", action='store_true', default=True,
-                        help="use tensorboard for visualization adn logging")
+                        help="use tensorboard for visualization and logging")
     parser.add_argument("--vis_num_samples", type=int, default=8,
                         help='number of samples for visualization (default: 8)')
     return parser
@@ -249,9 +249,12 @@ def main():
 
     # Setup logging and visualization
     if opts.enable_log:
-        curr_time = datetime.now().strftime("%d-%m-%Y_%H-%M")
-        tb_train = SummaryWriter(f'logs/{curr_time}/train')
-        tb_val = SummaryWriter(f'logs/{curr_time}/val')
+        tb = TensorboardSummary('logs')
+        tb_train, tb_val, log_dir = tb.create()
+
+        log_file = logging.FileHandler(os.path.join(log_dir, 'log.txt'))
+        log_file.setFormatter(format)
+        logs.addHandler(log_file)
 
     os.environ['CUDA_VISIBLE_DEVICES'] = opts.gpu_id
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -404,13 +407,7 @@ def main():
                     tb_val.add_scalar('[Val] Overall Acc', val_score['Overall Acc'], cur_itrs)
                     tb_val.add_scalar('[Val] Mean IoU', val_score['Mean IoU'], cur_itrs)
 
-                    for k, (img, gt_label, pred) in enumerate(ret_samples):
-                        img = (denorm(img) * 255).astype(np.uint8)
-                        gt_label = val_dst.decode_target(gt_label).transpose(2, 0, 1).astype(np.uint8)
-                        pred = val_dst.decode_target(pred).transpose(2, 0, 1).astype(np.uint8)
-                        concat_img = np.concatenate((img, pred, gt_label), axis=2)  # concat along width
-                        tb_val.add_image(f'Image and prediction {k}', torch.from_numpy(concat_img))
-
+                    visualize_images(tb_val, ret_samples, denorm, val_dst)
                 model.train()
             scheduler.step()
 
