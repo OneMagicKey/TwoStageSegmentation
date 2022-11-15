@@ -249,7 +249,7 @@ def main():
         opts.num_classes = 19
 
     # Setup logging to console
-    logs = logging.getLogger(__name__)
+    logs = logging.getLogger()
     logs.setLevel(logging.INFO)
     stream = logging.StreamHandler()
     format = logging.Formatter("%(message)s")
