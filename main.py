@@ -4,6 +4,7 @@ import utilities
 import os
 import random
 from datetime import datetime
+import logging
 import itertools
 import argparse
 import numpy as np
@@ -247,7 +248,15 @@ def main():
     elif opts.dataset.lower() == 'cityscapes':
         opts.num_classes = 19
 
-    # Setup logging and visualization
+    # Setup logging to console
+    logs = logging.getLogger(__name__)
+    logs.setLevel(logging.INFO)
+    stream = logging.StreamHandler()
+    format = logging.Formatter("%(message)s")
+    stream.setFormatter(format)
+    logs.addHandler(stream)
+
+    # Setup logging to file and tensorboard visualization
     if opts.enable_log:
         tb = TensorboardSummary('logs')
         tb_train, tb_val, log_dir = tb.create()
@@ -258,8 +267,7 @@ def main():
 
     os.environ['CUDA_VISIBLE_DEVICES'] = opts.gpu_id
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f'Device: {device}')
-
+    logs.info(f'Device: {device}')
     # Setup random seed
     torch.manual_seed(opts.random_seed)
     np.random.seed(opts.random_seed)
@@ -277,7 +285,7 @@ def main():
         drop_last=True)  # drop_last=True to ignore single-image batches.
     val_loader = data.DataLoader(
         val_dst, batch_size=opts.val_batch_size, shuffle=True, num_workers=2)
-    print(f'Dataset: {opts.dataset}, Train set: {len(train_dst)}, Val set: {len(val_dst)}')
+    logs.info(f'Dataset: {opts.dataset}, Train set: {len(train_dst)}, Val set: {len(val_dst)}')
 
     # Set up model (all models are constructed at network.modeling)
     model = network.modeling.__dict__[opts.model](num_classes=opts.num_classes, output_stride=opts.output_stride)
@@ -321,7 +329,7 @@ def main():
             "scheduler_state": scheduler.state_dict(),
             "best_score": best_score,
         }, path)
-        print(f'Model saved as {path}')
+        logs.info(f'Model saved as {path}')
 
     utilities.mkdir('checkpoints')
     # Restore
@@ -339,11 +347,11 @@ def main():
             scheduler.load_state_dict(checkpoint["scheduler_state"])
             cur_itrs = checkpoint["cur_itrs"]
             best_score = checkpoint['best_score']
-            print(f'Training state restored from {opts.ckpt}')
-        print(f'Model restored from {opts.ckpt}')
+            logs.info(f'Training state restored from {opts.ckpt}')
+        logs.info(f'Model restored from {opts.ckpt}')
         del checkpoint  # free memory
     else:
-        print("[!] Retrain")
+        logs.info("[!] Retrain")
         model = nn.DataParallel(model)
         model.to(device)
 
@@ -357,7 +365,7 @@ def main():
         val_score, ret_samples, loss_val = validate(
             opts=opts, model=model, loader=val_loader, device=device, metrics=metrics, criterion=criterion,
             ret_samples_ids=vis_sample_id)
-        print(metrics.to_str(val_score))
+        logs.info(metrics.to_str(val_score))
         return
 
     interval_loss = 0
@@ -385,19 +393,19 @@ def main():
 
             if cur_itrs % 10 == 0:
                 interval_loss = interval_loss / 10
-                print(f'Epoch {cur_epochs}, Itrs {cur_itrs}/{opts.total_itrs}, Loss={interval_loss:.5f}')
+                logs.info(f'Epoch {cur_epochs}, Itrs {cur_itrs}/{opts.total_itrs}, Loss={interval_loss:.5f}')
                 if opts.enable_log:
                     tb_train.add_scalar('Loss', interval_loss, cur_itrs)
                 interval_loss = 0.0
 
             if cur_itrs % opts.val_interval == 0:
                 save_ckpt(f'checkpoints/latest_{opts.model}_{opts.dataset}_num_{len(train_dst)}.pth')
-                print("validation...")
+                logs.info("validation...")
                 model.eval()
                 val_score, ret_samples, loss_val = validate(
                     opts=opts, model=model, loader=val_loader, device=device, metrics=metrics, criterion=criterion,
                     ret_samples_ids=vis_sample_id)
-                print(metrics.to_str(val_score))
+                logs.info(metrics.to_str(val_score))
                 if val_score['Mean IoU'] > best_score:  # save best model
                     best_score = val_score['Mean IoU']
                     save_ckpt(f'checkpoints/best_{opts.model}_{opts.dataset}_num_{len(train_dst)}.pth')
