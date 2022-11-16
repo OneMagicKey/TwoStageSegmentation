@@ -340,7 +340,7 @@ def main():
 
     interval_loss = 0
     dst_len = len(train_dst_full) + len(train_dst_weak)
-    bs = opts.batch_size_f + opts.batch_size_f
+    bs = opts.batch_size_f + opts.batch_size_w
     ancillary_model.eval()
     while True:  # cur_itrs < opts.total_itrs:
         # =====  Train  =====
@@ -402,7 +402,7 @@ def main():
                 primary_model.train()
             scheduler.step()
 
-            if cur_epochs * dst_len // bs > cur_itrs:
+            if cur_epochs * dst_len // bs < cur_itrs:
                 cur_epochs += 1
             if cur_itrs >= opts.total_itrs:
                 tb_train.close()
