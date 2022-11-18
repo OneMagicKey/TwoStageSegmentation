@@ -4,7 +4,8 @@ from .backbone import (
     resnet,
     mobilenetv2,
     hrnetv2,
-    xception
+    xception,
+    selfcorrection
 )
 
 
@@ -276,7 +277,14 @@ def deeplabv3plus_xception_bbox(num_classes=21, output_stride=16, pretrained_bac
         output_stride (int): output stride for deeplab.
         pretrained_backbone (bool): If True, use the pretrained backbone.
     """
-    return _load_model('deeplabv3plus_bbox', 'xception', num_classes, output_stride=output_stride, pretrained_backbone=pretrained_backbone)
+    return _load_model('deeplabv3plus_bbox', 'xception', num_classes, output_stride=output_stride,
+                       pretrained_backbone=pretrained_backbone)
+
+
+def selfcorrection_module(num_classes=21, num_features=128):
+    model = selfcorrection.SelfCorrectionModule(num_classes, num_features)
+    return model
+
 
 if __name__ == '__main__':
     import torch
