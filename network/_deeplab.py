@@ -87,15 +87,16 @@ class DeepLabHeadV3Plus_bbox(nn.Module):
             nn.Conv2d(256, num_classes, 1)
         )
 
-        self.bbox_encoder_ll = nn.Sequential(
+        self.bbox_encoder = nn.Sequential(
             nn.Conv2d(num_classes, 256, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(256),
             nn.Sigmoid()
         )
 
-        self.bbox_encoder_out = nn.Sequential(
-            nn.Conv2d(num_classes, 256, kernel_size=3, padding=1, bias=False),
-            nn.Sigmoid()
-        )
+        # self.bbox_encoder_out = nn.Sequential(
+        #     nn.Conv2d(num_classes, 256, kernel_size=3, padding=1, bias=False),
+        #     nn.Sigmoid()
+        # )
 
         self._init_weight()
 
@@ -103,12 +104,12 @@ class DeepLabHeadV3Plus_bbox(nn.Module):
         low_level_feature = feature['low_level']
         # low_level_feature = self.project( feature['low_level'] )
         bboxes_rescaled = F.interpolate(bboxes, size=low_level_feature.shape[2:], mode='bilinear', align_corners=False)
-        low_level_feature = low_level_feature * self.bbox_encoder_ll(bboxes_rescaled)
+        low_level_feature = low_level_feature * self.bbox_encoder(bboxes_rescaled)
         low_level_feature = self.project( low_level_feature )
 
         output_feature = self.aspp(feature['out'])
         bboxes_rescaled = F.interpolate(bboxes, size=output_feature.shape[2:], mode='bilinear', align_corners=False)
-        output_feature = output_feature * self.bbox_encoder_out(bboxes_rescaled)
+        output_feature = output_feature * self.bbox_encoder(bboxes_rescaled)
         output_feature = F.interpolate(output_feature, size=low_level_feature.shape[2:], mode='bilinear', align_corners=False)
         return self.classifier( torch.cat( [ low_level_feature, output_feature ], dim=1 ) )
 
