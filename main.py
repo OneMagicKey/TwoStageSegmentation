@@ -174,22 +174,22 @@ def validate(opts, model, loader, device, metrics, criterion, ret_samples_ids=No
     flipping = [0, 1] if opts.multiscale_val else [0]
     loss_val = 0.0
     for i, (images, labels, bboxes) in tqdm(enumerate(loader)):
-        multi_avg = torch.zeros(images.shape[0], opts.num_classes, images.shape[2], images.shape[3], dtype=torch.float32)  # BxCxHxW
+        multi_avg = torch.zeros(images.shape[0], opts.num_classes, images.shape[2], images.shape[3],
+                                device=device, dtype=torch.float32)  # BxCxHxW
         for (scale, flip) in itertools.product(multiscale, flipping):
-            img_s, labels_s, bboxes_s = et.ExtScale(scale=scale, is_tensor=True)(images, labels, bboxes)
-            img_s, labels_s, bboxes_s = et.ExtRandomHorizontalFlip(p=flip)(img_s, labels_s, bboxes_s)
 
-            img_s = img_s.to(device, dtype=torch.float32)
-            bboxes_s = bboxes_s.to(device, dtype=torch.float32)
-            labels_s = labels_s.to(device, dtype=torch.long)
+            img_s = images.to(device, dtype=torch.float32)
+            bboxes_s = bboxes.to(device, dtype=torch.float32)
+            labels_s = labels.to(device, dtype=torch.long)
+
+            img_s, labels_s, bboxes_s = et.ExtScale(scale=scale, is_tensor=True)(img_s, labels_s, bboxes_s)
+            img_s, labels_s, bboxes_s = et.ExtRandomHorizontalFlip(p=flip)(img_s, labels_s, bboxes_s)
 
             if opts.return_bbox:
                 outputs = model(img_s, bboxes_s)
-                bboxes_s.cpu()
             else:
                 outputs = model(img_s)
             loss_val += criterion(outputs, labels_s)  # just for the stats
-            outputs = outputs.cpu()
             if flip:
                 outputs = F.hflip(outputs)
             outputs = F.resize(outputs, size=multi_avg.shape[2:])
@@ -199,9 +199,9 @@ def validate(opts, model, loader, device, metrics, criterion, ret_samples_ids=No
             # it is required to resize prediction to initial size in order to get correct iou
             # batch size = 1 in this case
             images, preds, _ = et.ExtResize(size=labels.shape[1:])(images, preds, bboxes)
-        images = images.numpy()
-        preds = preds.numpy()
-        labels = labels.numpy().astype(np.uint8)
+        images = images.cpu().numpy()
+        preds = preds.cpu().numpy()
+        labels = labels.cpu().numpy().astype(np.uint8)
 
         metrics.update(labels, preds)
         if ret_samples_ids is not None and i in ret_samples_ids:  # get vis samples
