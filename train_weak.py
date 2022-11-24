@@ -40,6 +40,9 @@ def get_argparser():
                         choices=available_models, help='primary model name')
     parser.add_argument("--ancillary_model", type=str, default='deeplabv3plus_xception_bbox',
                         choices=available_models, help='ancillary model name')
+    parser.add_argument('--selfcorrection', type=str, default=None,
+                        choices=['f', 'fw'], help='whether to use the self-correction module '
+                                                  'to train the primary model')
     parser.add_argument("--separable_conv", action='store_true', default=False,
                         help="apply separable conv to decoder and aspp")
     parser.add_argument("--output_stride", type=int, default=16, choices=[8, 16])
@@ -159,18 +162,19 @@ def validate(opts, model, loader, device, metrics, criterion, ret_samples_ids=No
     loss_val = 0.0
     for i, (images, labels, bboxes) in tqdm(enumerate(loader)):
         multi_avg = torch.zeros(images.shape[0], opts.num_classes, images.shape[2], images.shape[3],
-                                dtype=torch.float32)  # BxCxHxW
+                                device=device, dtype=torch.float32)  # BxCxHxW
         for (scale, flip) in itertools.product(multiscale, flipping):
-            img_s, labels_s, bboxes_s = et.ExtScale(scale=scale, is_tensor=True)(images, labels, bboxes)
-            img_s, labels_s, bboxes_s = et.ExtRandomHorizontalFlip(p=flip)(img_s, labels_s, bboxes_s)
 
-            img_s = img_s.to(device, dtype=torch.float32)
-            labels_s = labels_s.to(device, dtype=torch.long)
+            img_s = images.to(device, dtype=torch.float32)
+            bboxes_s = bboxes.to(device, dtype=torch.float32)
+            labels_s = labels.to(device, dtype=torch.long)
+
+            img_s, labels_s, bboxes_s = et.ExtScale(scale=scale, is_tensor=True)(img_s, labels_s, bboxes_s)
+            img_s, labels_s, bboxes_s = et.ExtRandomHorizontalFlip(p=flip)(img_s, labels_s, bboxes_s)
 
             outputs = model(img_s)
 
-            loss_val += criterion(outputs, labels_s)
-            outputs = outputs.cpu()
+            loss_val += criterion(outputs, labels_s)  # just for the stats
             if flip:
                 outputs = F.hflip(outputs)
             outputs = F.resize(outputs, size=multi_avg.shape[2:])
@@ -180,9 +184,9 @@ def validate(opts, model, loader, device, metrics, criterion, ret_samples_ids=No
             # it is required to resize prediction to initial size in order to get correct iou
             # batch size = 1 in this case
             images, preds, _ = et.ExtResize(size=labels.shape[1:])(images, preds, bboxes)
-        images = images.numpy()
-        preds = preds.numpy()
-        labels = labels.numpy().astype(np.uint8)
+        images = images.cpu().numpy()
+        preds = preds.cpu().numpy()
+        labels = labels.cpu().numpy().astype(np.uint8)
 
         metrics.update(labels, preds)
         if ret_samples_ids is not None and i in ret_samples_ids:  # get vis samples
@@ -258,6 +262,9 @@ def main():
                                                                   output_stride=opts.output_stride)
     ancillary_model = network.modeling.__dict__[opts.ancillary_model](num_classes=opts.num_classes,
                                                                       output_stride=opts.output_stride)
+    if opts.selfcorrection is not None:
+        selfcorrection_module = network.modeling.__dict__['selfcorrection_module'](num_classes=opts.num_classes)
+
     if opts.separable_conv and 'plus' in opts.primary_model:
         network.convert_to_separable_conv(primary_model.classifier)
         network.convert_to_separable_conv(ancillary_model.classifier)
@@ -270,8 +277,10 @@ def main():
     # Set up optimizer
     optimizer = torch.optim.SGD(params=[
         {'params': primary_model.backbone.parameters(), 'lr': opts.lr},
-        {'params': primary_model.classifier.parameters(), 'lr': 10 * opts.lr},
+        {'params': primary_model.classifier.parameters(), 'lr': 10 * opts.lr}
     ], lr=opts.lr, momentum=0.9, weight_decay=opts.weight_decay)
+    if opts.selfcorrection is not None:
+        optimizer.add_param_group({'params': selfcorrection_module.parameters(), 'lr': 10 * opts.lr})
 
     if opts.lr_policy == 'poly':
         scheduler = PolyLR(optimizer, opts.total_itrs, power=0.9)
@@ -325,6 +334,8 @@ def main():
     ancillary_model.to(device)
     logs.info(f'Ancillary model restored from {opts.ckpt_ancillary}')
 
+    if opts.selfcorrection is not None:
+        selfcorrection_module.to(device)
     # ==========   Train Loop   ==========#
     vis_sample_id = np.random.randint(0, len(val_loader), opts.vis_num_samples,
                                       np.int32) if opts.enable_log else None
@@ -338,21 +349,89 @@ def main():
         logs.info(metrics.to_str(val_score))
         return
 
+    # Train w/o selfcorrection
+    # Train primary and selfcorrection on F
+    # Train primary and selfcorrection on F+W
     interval_loss = 0
-    dst_len = len(train_dst_full) + len(train_dst_weak)
-    bs = opts.batch_size_f + opts.batch_size_w
+    if opts.selfcorrection == 'f':
+        loader = zip(train_loader_f)
+        dst_len = len(train_dst_full)
+        bs = opts.batch_size_f
+    else:
+        loader = zip(train_loader_f, train_loader_w)
+        dst_len = len(train_dst_full) + len(train_dst_weak)
+        bs = opts.batch_size_f + opts.batch_size_w
+
     ancillary_model.eval()
+    cur_epochs += 1
+    primary_model.train()
+    if opts.selfcorrection is not None:
+        selfcorrection_module.train()
     while True:  # cur_itrs < opts.total_itrs:
         # =====  Train  =====
-        primary_model.train()
-        cur_epochs += 1
-        for batch in zip(train_loader_f, train_loader_w):
+        batch = next(loader)
+        # x = torch.cat([F.softmax(input_1, dim=1), F.softmax(input_2, dim=1)], dim=1)
+        optimizer.zero_grad()
+        if opts.selfcorrection == 'f':
+            (images_f, labels_f, bboxes_f), = batch
+            images_f = images_f.to(device, dtype=torch.float32)
+            bboxes_f = bboxes_f.to(device, dtype=torch.float32)
+            labels_f = labels_f.to(device, dtype=torch.long)
 
+            with torch.no_grad():
+                ancillary_logits_f = ancillary_model(images_f, bboxes_f)
+                ancillary_logits_f = softmax(ancillary_logits_f, dim=1)
+
+            outputs_f = primary_model(images_f)
+            primary_logits_f = softmax(outputs_f, dim=1)
+
+            outputs_sc_f = selfcorrection_module(primary_logits_f, ancillary_logits_f)
+
+            loss_primary = criterion_f(outputs_f, labels_f)
+            loss_sc = criterion_f(outputs_sc_f, labels_f)
+
+            loss = loss_primary + loss_sc
+            loss.backward()
+            optimizer.step()
+
+        elif opts.selfcorrection == 'fw':
+            (images_f, labels_f, bboxes_f), (images_w, _, bboxes_w) = batch
+            images_f = images_f.to(device, dtype=torch.float32)
+            bboxes_f = bboxes_f.to(device, dtype=torch.float32)
+            labels_f = labels_f.to(device, dtype=torch.long)
+            images_w = images_w.to(device, dtype=torch.float32)
+            bboxes_w = bboxes_w.to(device, dtype=torch.float32)
+            with torch.no_grad():
+                ancillary_logits_w = ancillary_model(images_w, bboxes_w)
+                ancillary_logits_w = softmax(ancillary_logits_w, dim=1)
+
+                ancillary_logits_f = ancillary_model(images_f, bboxes_f)
+                ancillary_logits_f = softmax(ancillary_logits_f, dim=1)
+
+            outputs_f = primary_model(images_f)
+            outputs_w = primary_model(images_w)
+
+            primary_logits_f = softmax(outputs_f, dim=1)
+
+            with torch.no_grad():
+                primary_logits_w = softmax(outputs_w, dim=1)
+                labels_probs_w = selfcorrection_module(primary_logits_w, ancillary_logits_w)
+                labels_probs_w = softmax(labels_probs_w, dim=1)
+
+            outputs_sc_f = selfcorrection_module(primary_logits_f, ancillary_logits_f)
+
+            loss_primary_f = criterion_f(outputs_f, labels_f)
+            loss_primary_w = criterion_w(outputs_w, labels_probs_w)
+            loss_sc = criterion_f(outputs_sc_f, labels_f)
+
+            loss = loss_primary_f + loss_primary_w + loss_sc
+            loss.backward()
+            optimizer.step()
+
+        else:
             (images_f, labels_f, _), (images_w, _, bboxes_w) = batch
-            cur_itrs += 1
 
             images_f = images_f.to(device, dtype=torch.float32)
-            # bboxes_f = bboxes_f.to(device, dtype=torch.float32)
             labels_f = labels_f.to(device, dtype=torch.long)
             images_w = images_w.to(device, dtype=torch.float32)
             bboxes_w = bboxes_w.to(device, dtype=torch.float32)
@@ -370,44 +449,45 @@ def main():
 
             loss.backward()
             optimizer.step()
+        cur_itrs += 1
 
-            np_loss = loss.detach().cpu().numpy()
-            interval_loss += np_loss
+        np_loss = loss.detach().cpu().numpy()
+        interval_loss += np_loss
 
-            if cur_itrs % 10 == 0:
-                interval_loss = interval_loss / 10
-                logs.info(f'Epoch {cur_epochs}, Itrs {cur_itrs}/{opts.total_itrs}, Loss={interval_loss:.5f}')
-                if opts.enable_log:
-                    tb_train.add_scalar('Loss', interval_loss, cur_itrs)
-                interval_loss = 0.0
+        if cur_itrs % 10 == 0:
+            interval_loss = interval_loss / 10
+            logs.info(f'Epoch {cur_epochs}, Itrs {cur_itrs}/{opts.total_itrs}, Loss={interval_loss:.5f}')
+            if opts.enable_log:
+                tb_train.add_scalar('Loss', interval_loss, cur_itrs)
+            interval_loss = 0.0
 
-            if cur_itrs % opts.val_interval == 0:
-                save_ckpt(f'checkpoints/latest_{opts.primary_model}_{opts.dataset}_num_{len(train_dst_full)}.pth')
-                logs.info("validation...")
-                primary_model.eval()
-                val_score, ret_samples, loss_val = validate(
-                    opts=opts, model=primary_model, loader=val_loader, device=device, metrics=metrics,
-                    criterion=criterion_f,
-                    ret_samples_ids=vis_sample_id)
-                logs.info(metrics.to_str(val_score))
-                if val_score['Mean IoU'] > best_score:  # save best model
-                    best_score = val_score['Mean IoU']
-                    save_ckpt(f'checkpoints/best_{opts.primary_model}_{opts.dataset}_num_{len(train_dst_full)}.pth')
-                if opts.enable_log:  # visualize validation score and samples
-                    tb_val.add_scalar('Loss', loss_val, cur_itrs)
-                    tb_val.add_scalar('[Val] Overall Acc', val_score['Overall Acc'], cur_itrs)
-                    tb_val.add_scalar('[Val] Mean IoU', val_score['Mean IoU'], cur_itrs)
+        if cur_itrs % opts.val_interval == 0:
+            save_ckpt(f'checkpoints/latest_{opts.primary_model}_{opts.dataset}_num_{len(train_dst_full)}.pth')
+            logs.info("validation...")
+            primary_model.eval()
+            val_score, ret_samples, loss_val = validate(
+                opts=opts, model=primary_model, loader=val_loader, device=device, metrics=metrics,
+                criterion=criterion_f,
+                ret_samples_ids=vis_sample_id)
+            logs.info(metrics.to_str(val_score))
+            if val_score['Mean IoU'] > best_score:  # save best model
+                best_score = val_score['Mean IoU']
+                save_ckpt(f'checkpoints/best_{opts.primary_model}_{opts.dataset}_num_{len(train_dst_full)}.pth')
+            if opts.enable_log:  # visualize validation score and samples
+                tb_val.add_scalar('Loss', loss_val, cur_itrs)
+                tb_val.add_scalar('[Val] Overall Acc', val_score['Overall Acc'], cur_itrs)
+                tb_val.add_scalar('[Val] Mean IoU', val_score['Mean IoU'], cur_itrs)
 
-                    visualize_images(tb_val, ret_samples, denorm, val_dst)
-                primary_model.train()
-            scheduler.step()
+                visualize_images(tb_val, ret_samples, denorm, val_dst)
+            primary_model.train()
+        scheduler.step()
 
-            if cur_epochs * dst_len // bs < cur_itrs:
-                cur_epochs += 1
-            if cur_itrs >= opts.total_itrs:
-                tb_train.close()
-                tb_val.close()
-                return
+        if cur_epochs * dst_len // bs < cur_itrs:
+            cur_epochs += 1
+        if cur_itrs >= opts.total_itrs:
+            tb_train.close()
+            tb_val.close()
+            return
 
 
 if __name__ == '__main__':
