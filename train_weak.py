@@ -89,6 +89,8 @@ def get_argparser():
     parser.add_argument("--return_bbox", type=str, default=None, choices=['ground_truth', 'yolo'])
     parser.add_argument("--ckpt_ancillary", type=str, default=None,
                         help='[path to pretrained ancillary model')
+    parser.add_argument("--ckpt_selfcorrecting", type=str, default=None,
+                        help='[path to pretrained selfcorrection module')
     parser.add_argument("--multiscale_val", action='store_true', default=False,
                         help="enable multi-scale flipping inference during validation")
     parser.add_argument("--train_num_images", type=int, default=-1,
@@ -295,12 +297,12 @@ def main():
         criterion_f = nn.CrossEntropyLoss(ignore_index=255, reduction='mean')
         criterion_w = nn.CrossEntropyLoss(reduction='mean')  # takes probs as target
 
-    def save_ckpt(path):
+    def save_ckpt(path, model):
         """ save current model
         """
         torch.save({
             "cur_itrs": cur_itrs,
-            "model_state": primary_model.module.state_dict(),
+            "model_state": model.module.state_dict(),
             "optimizer_state": optimizer.state_dict(),
             "scheduler_state": scheduler.state_dict(),
             "best_score": best_score,
@@ -333,7 +335,10 @@ def main():
     ancillary_model = nn.DataParallel(ancillary_model)
     ancillary_model.to(device)
     logs.info(f'Ancillary model restored from {opts.ckpt_ancillary}')
-
+    if opts.ckpt_selfcorrecting and os.path.isfile(opts.ckpt_selfcorrecting):
+        ckpt_selfcorrecting = torch.load(opts.ckpt_selfcorrecting, map_location=torch.device('cpu'))
+        selfcorrection_module.load_stare_dict(ckpt_selfcorrecting)
+        logs.info(f'Selfcorrection module restored from {opts.ckpt_selfcorrecting}')
     if opts.selfcorrection is not None:
         selfcorrection_module.to(device)
     # ==========   Train Loop   ==========#
@@ -349,18 +354,15 @@ def main():
         logs.info(metrics.to_str(val_score))
         return
 
-    # Train w/o selfcorrection
-    # Train primary and selfcorrection on F
-    # Train primary and selfcorrection on F+W
     interval_loss = 0
     if opts.selfcorrection == 'f':
         loader = zip(train_loader_f)
         dst_len = len(train_dst_full)
-        bs = opts.batch_size_f
+        batch_size = opts.batch_size_f
     else:
         loader = zip(train_loader_f, train_loader_w)
         dst_len = len(train_dst_full) + len(train_dst_weak)
-        bs = opts.batch_size_f + opts.batch_size_w
+        batch_size = opts.batch_size_f + opts.batch_size_w
 
     ancillary_model.eval()
     cur_epochs += 1
@@ -370,7 +372,6 @@ def main():
     while True:  # cur_itrs < opts.total_itrs:
         # =====  Train  =====
         batch = next(loader)
-        # x = torch.cat([F.softmax(input_1, dim=1), F.softmax(input_2, dim=1)], dim=1)
         optimizer.zero_grad()
         if opts.selfcorrection == 'f':
             (images_f, labels_f, bboxes_f), = batch
@@ -462,7 +463,11 @@ def main():
             interval_loss = 0.0
 
         if cur_itrs % opts.val_interval == 0:
-            save_ckpt(f'checkpoints/latest_{opts.primary_model}_{opts.dataset}_num_{len(train_dst_full)}.pth')
+            save_ckpt(f'checkpoints/latest_{opts.primary_model}_{opts.dataset}_num_{len(train_dst_full)}.pth',
+                      primary_model)
+            if opts.selfcorrection is not None:
+                save_ckpt(f'checkpoints/latest_sc_model_{opts.selfcorrection}_{opts.dataset}_num_'
+                          f'{len(train_dst_full)}.pth', selfcorrection_module)
             logs.info("validation...")
             primary_model.eval()
             val_score, ret_samples, loss_val = validate(
@@ -472,7 +477,11 @@ def main():
             logs.info(metrics.to_str(val_score))
             if val_score['Mean IoU'] > best_score:  # save best model
                 best_score = val_score['Mean IoU']
-                save_ckpt(f'checkpoints/best_{opts.primary_model}_{opts.dataset}_num_{len(train_dst_full)}.pth')
+                save_ckpt(f'checkpoints/best_{opts.primary_model}_{opts.dataset}_num_{len(train_dst_full)}.pth',
+                          primary_model)
+                if opts.selfcorrection is not None:
+                    save_ckpt(f'checkpoints/best_sc_model_{opts.selfcorrection}_{opts.dataset}_num_'
+                              f'{len(train_dst_full)}.pth', selfcorrection_module)
             if opts.enable_log:  # visualize validation score and samples
                 tb_val.add_scalar('Loss', loss_val, cur_itrs)
                 tb_val.add_scalar('[Val] Overall Acc', val_score['Overall Acc'], cur_itrs)
@@ -482,7 +491,7 @@ def main():
             primary_model.train()
         scheduler.step()
 
-        if cur_epochs * dst_len // bs < cur_itrs:
+        if cur_epochs * dst_len // batch_size < cur_itrs:
             cur_epochs += 1
         if cur_itrs >= opts.total_itrs:
             tb_train.close()
