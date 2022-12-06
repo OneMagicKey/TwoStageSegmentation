@@ -337,7 +337,7 @@ def main():
     logs.info(f'Ancillary model restored from {opts.ckpt_ancillary}')
     if opts.ckpt_selfcorrecting and os.path.isfile(opts.ckpt_selfcorrecting):
         ckpt_selfcorrecting = torch.load(opts.ckpt_selfcorrecting, map_location=torch.device('cpu'))
-        selfcorrection_module.load_stare_dict(ckpt_selfcorrecting)
+        selfcorrection_module.load_state_dict(ckpt_selfcorrecting)
         logs.info(f'Selfcorrection module restored from {opts.ckpt_selfcorrecting}')
     if opts.selfcorrection is not None:
         selfcorrection_module.to(device)
@@ -466,8 +466,10 @@ def main():
             save_ckpt(f'checkpoints/latest_{opts.primary_model}_{opts.dataset}_num_{len(train_dst_full)}.pth',
                       primary_model)
             if opts.selfcorrection is not None:
-                save_ckpt(f'checkpoints/latest_sc_model_{opts.selfcorrection}_{opts.dataset}_num_'
-                          f'{len(train_dst_full)}.pth', selfcorrection_module)
+                path = f'checkpoints/latest_sc_model_{opts.selfcorrection}_{opts.dataset}_num_' \
+                       f'{len(train_dst_full)}.pth'
+                torch.save(selfcorrection_module.state_dict(), path)
+                logs.info(f'Model saved as {path}')
             logs.info("validation...")
             primary_model.eval()
             val_score, ret_samples, loss_val = validate(
@@ -480,8 +482,10 @@ def main():
                 save_ckpt(f'checkpoints/best_{opts.primary_model}_{opts.dataset}_num_{len(train_dst_full)}.pth',
                           primary_model)
                 if opts.selfcorrection is not None:
-                    save_ckpt(f'checkpoints/best_sc_model_{opts.selfcorrection}_{opts.dataset}_num_'
-                              f'{len(train_dst_full)}.pth', selfcorrection_module)
+                    path = f'checkpoints/best_sc_model_{opts.selfcorrection}_{opts.dataset}_num_' \
+                       f'{len(train_dst_full)}.pth'
+                    torch.save(selfcorrection_module.state_dict(), path)
+                    logs.info(f'Model saved as {path}')
             if opts.enable_log:  # visualize validation score and samples
                 tb_val.add_scalar('Loss', loss_val, cur_itrs)
                 tb_val.add_scalar('[Val] Overall Acc', val_score['Overall Acc'], cur_itrs)
